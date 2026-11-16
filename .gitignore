@@ -1,0 +1,24 @@
+/build/
+/bin/
+/runtime/
+/reports/
+/data/
+/native/android-*
+/native/mc-*
+/native/macos/android-arm64/
+**/__pycache__/
+*.pyc
+*.part
+.DS_Store
+# Account state must never enter source control.
+**/session/
+**/*-session/
+**/DEVELOPER_TOKEN
+**/MUSIC_TOKEN
+**/STOREFRONT_ID
+**/device-id
+**/playback-plan.json
+*.db
+*.sqlite*
+*.adi
+*.log

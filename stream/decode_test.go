@@ -1,0 +1,139 @@
+package stream
+
+import (
+	"bytes"
+	"context"
+	"encoding/binary"
+	"fmt"
+	"github.com/Eyevinn/mp4ff/mp4"
+	"github.com/InkCitrus/apple-music-native-core/catalog"
+	"github.com/InkCitrus/apple-music-native-core/codec"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+type syntheticKeys struct{ opened int }
+
+func (k *syntheticKeys) OpenKey(id, uri string) error { k.opened++; return nil }
+func (k *syntheticKeys) Decrypt(b []byte) error {
+	for i := 0; i < len(b)&^15; i++ {
+		b[i] ^= 0xaa
+	}
+	return nil
+}
+func syntheticMedia(t *testing.T) ([]byte, int, []byte) {
+	t.Helper()
+	data, e := os.ReadFile("../codec/testdata/pcm-24-96000.m4a")
+	if e != nil {
+		t.Fatal(e)
+	}
+	original, e := mp4.DecodeFile(bytes.NewReader(data))
+	if e != nil {
+		t.Fatal(e)
+	}
+	track := original.Moov.Traks[0]
+	body := track.Mdia.Minf.Stbl.Stsd.Children[0].(*mp4.UnknownBox).Payload()
+	var config []byte
+	for p := 28; p+8 <= len(body); {
+		n := int(binary.BigEndian.Uint32(body[p : p+4]))
+		if n < 8 || p+n > len(body) {
+			t.Fatal("invalid fixture")
+		}
+		if string(body[p+4:p+8]) == "alac" {
+			config = body[p+8 : p+n]
+			break
+		}
+		p += n
+	}
+	init := mp4.CreateEmptyInit()
+	init.AddEmptyTrack(96000, "audio", "eng")
+	entry := mp4.CreateAudioSampleEntryBox("enca", 2, 24, 48000, mp4.CreateUnknownBox("alac", uint64(8+len(config)), config))
+	sinf := &mp4.SinfBox{}
+	sinf.AddChild(&mp4.FrmaBox{DataFormat: "alac"})
+	sinf.AddChild(&mp4.SchmBox{SchemeType: "cbcs", SchemeVersion: 65536})
+	schi := &mp4.SchiBox{}
+	schi.AddChild(&mp4.TencBox{Version: 1, DefaultIsProtected: 1, DefaultKID: make([]byte, 16), DefaultConstantIV: make([]byte, 16)})
+	sinf.AddChild(schi)
+	entry.AddChild(sinf)
+	init.Moov.Traks[0].Mdia.Minf.Stbl.Stsd.AddChild(entry)
+	fragment, _ := mp4.CreateFragment(1, 1)
+	senc := mp4.CreateSencBox()
+	var timestamp uint64
+	for i := uint32(1); i <= track.GetNrSamples(); i++ {
+		ranges, e := track.GetRangesForSampleInterval(i, i)
+		if e != nil {
+			t.Fatal(e)
+		}
+		r := ranges[0]
+		packet := append([]byte(nil), data[r.Offset:r.Offset+r.Size]...)
+		for j := 0; j < len(packet)&^15; j++ {
+			packet[j] ^= 0xaa
+		}
+		dur := track.Mdia.Minf.Stbl.Stts.GetDur(i)
+		fragment.AddFullSample(mp4.FullSample{Sample: mp4.NewSample(0, dur, uint32(len(packet)), 0), DecodeTime: timestamp, Data: packet})
+		timestamp += uint64(dur)
+		senc.AddSample(mp4.SencSample{})
+	}
+	fragment.Moof.Traf.AddChild(senc)
+	var buffer bytes.Buffer
+	if e = init.Encode(&buffer); e != nil {
+		t.Fatal(e)
+	}
+	n := buffer.Len()
+	if e = fragment.Encode(&buffer); e != nil {
+		t.Fatal(e)
+	}
+	expected, _ := os.ReadFile("../codec/testdata/pcm-24-96000.pcm")
+	return buffer.Bytes(), n, expected
+}
+func TestEncryptedHLSToPCMAndSeek(t *testing.T) {
+	data, n, want := syntheticMedia(t)
+	old := mediaClient
+	mediaClient = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.Header.Get("Authorization") != "" || r.Header.Get("Music-User-Token") != "" {
+			t.Error("tokens sent to CDN")
+		}
+		a := strings.Split(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-")
+		start, _ := strconv.Atoi(a[0])
+		end, _ := strconv.Atoi(a[1])
+		return &http.Response{StatusCode: 206, Header: http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, len(data))}}, Body: io.NopCloser(bytes.NewReader(data[start : end+1]))}, nil
+	})}
+	defer func() { mediaClient = old }()
+	p := catalog.Plan{TrackID: "123", MediaURL: "https://fixture.invalid/playlist", Playlist: fmt.Sprintf("#EXTM3U\n#EXT-X-MAP:URI=\"audio\",BYTERANGE=\"%d@0\"\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://itunes.apple.com/test\"\n#EXTINF:1,\n#EXT-X-BYTERANGE:%d@%d\naudio\n#EXT-X-ENDLIST\n", n, len(data)-n, n)}
+	for _, start := range []float64{0, 0.5} {
+		var got []byte
+		keys := &syntheticKeys{}
+		e := Decode(context.Background(), p, start, keys, func(f codec.Format) error {
+			if f.SampleRate != 96000 || f.Bits != 24 {
+				t.Fatal(f)
+			}
+			return nil
+		}, func(b []byte) error { got = append(got, b...); return nil })
+		if e != nil {
+			t.Fatal(e)
+		}
+		offset := int(start*96000) * 6
+		if !bytes.Equal(got, want[offset:]) {
+			t.Fatalf("PCM mismatch at seek %v: got %d want %d", start, len(got), len(want)-offset)
+		}
+		if keys.opened != 1 {
+			t.Fatal("wrong license context count")
+		}
+	}
+}
+func TestInvalidRanges(t *testing.T) {
+	for _, v := range []string{"1", "0@0", "33554433@0", "2@-1", "1@9223372036854775807"} {
+		_, _, e := byteRange(v)
+		if e == nil {
+			t.Errorf("accepted %s", v)
+		}
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

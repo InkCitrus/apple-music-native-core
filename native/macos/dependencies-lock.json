@@ -1,0 +1,22 @@
+{
+  "android-linker": {
+    "repository": "minecraft-linux/mcpelauncher-linker",
+    "revision": "1ac3ea6c1cf4f73a84d73f0bff510fba94a7d0f2"
+  },
+  "android-libc-shim": {
+    "repository": "minecraft-linux/libc-shim",
+    "revision": "ff7303254cb7a4e4f3fb11216c9aea35674aee8b"
+  },
+  "mc-logger": {
+    "repository": "minecraft-linux/logger",
+    "revision": "6cd91de7228bb41f29efa6b0da0ec60ccb56397a"
+  },
+  "mc-epoll-shim": {
+    "repository": "minecraft-linux/epoll-shim",
+    "revision": "88650b21c97a6fffdffdc88545c178a2e690466f"
+  },
+  "mc-elf-header": {
+    "repository": "minecraft-linux/osx-elf-header",
+    "revision": "c08b775e59f84f6dec0afc143cac70d1b454116c"
+  }
+}

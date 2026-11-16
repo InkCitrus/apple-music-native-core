@@ -1,0 +1,66 @@
+name: Native core bundles
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin-arm64
+          - os: ubuntu-22.04
+            platform: linux-amd64
+          - os: windows-latest
+            platform: windows-amd64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: msys2/setup-msys2@v2
+        id: msys2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make git mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld
+      - name: Configure Windows compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          '${{ steps.msys2.outputs.msys2-location }}\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          'AMCORE_MSYS=${{ steps.msys2.outputs.msys2-location }}' | Out-File -FilePath $env:GITHUB_ENV -Append
+          'CC=gcc' | Out-File -FilePath $env:GITHUB_ENV -Append
+          'CXX=g++' | Out-File -FilePath $env:GITHUB_ENV -Append
+          'CGO_ENABLED=1' | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Test portable libraries
+        run: go test -race ./...
+      - name: Test compiled synthetic SDK transport
+        if: runner.os != 'Windows'
+        run: python3 scripts/test_native.py
+      - name: Build native bundle
+        if: runner.os != 'Windows'
+        run: python3 scripts/build.py
+      - name: Build Windows native bundle
+        if: runner.os == 'Windows'
+        run: python scripts/build.py --msys "$env:AMCORE_MSYS"
+      - name: Bundle source and dependency notices
+        shell: bash
+        run: |
+          cp THIRD_PARTY.md LICENSE build/bundle/
+          git archive --format=tar.gz HEAD -o build/bundle/corresponding-source.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amcore-${{ matrix.platform }}
+          path: build/bundle/
+          retention-days: 14
+          if-no-files-found: error
