@@ -31,6 +31,7 @@ struct AccountStrings {
     @Published var status = ""
     let preview: Bool
     let appName: String
+    let language: String
     let strings: AccountStrings
     init() {
         let args = CommandLine.arguments
@@ -40,7 +41,8 @@ struct AccountStrings {
         }
         preview = !args.contains("--pipe")
         appName = String((option("--app-name") ?? (preview ? "MyGo Music" : "Apple Music Native Core")).prefix(80))
-        strings = AccountStrings(language: option("--language") ?? "")
+        language = option("--language") ?? ""
+        strings = AccountStrings(language: language)
     }
     var ready: Bool {
         !busy && !success && (verification ? code.count == 6 : !account.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !password.isEmpty)
@@ -188,6 +190,7 @@ struct AccountView: View {
     let model = AccountModel()
     var window: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NativeEditingMenu.install(appName: model.appName, language: model.language)
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 460, height: 466), styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = model.strings.format("window_title", model.appName)
         window.contentView = NSHostingView(rootView: AccountView(model: model))

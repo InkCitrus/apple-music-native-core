@@ -153,6 +153,7 @@ struct PlayerView: View {
     let model = PlayerModel()
     var window: NSWindow?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NativeEditingMenu.install(appName: "Native Core Demo", language: model.chinese ? "zh-Hans" : "en")
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 480), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Native Core Demo"
         window.contentView = NSHostingView(rootView: PlayerView(model: model))
