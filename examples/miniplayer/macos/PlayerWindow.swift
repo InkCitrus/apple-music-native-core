@@ -20,17 +20,34 @@ struct PlaybackState: Decodable {
     @Published var message = ""
     @Published var alive = false
     let chinese: Bool
+    let launchArguments: [String]
     private var process: Process?
     private var input: FileHandle?
     private var output = Data()
     init() {
-        let args = CommandLine.arguments
+        var args = Array(CommandLine.arguments.dropFirst())
+        let environment = ProcessInfo.processInfo.environment
+        for (flag, name) in [("--session", "AMCORE_DEMO_SESSION"), ("--runtime", "AMCORE_DEMO_RUNTIME"), ("--track", "AMCORE_DEMO_TRACK"), ("--volume", "AMCORE_DEMO_VOLUME"), ("--language", "AMCORE_DEMO_LANGUAGE")] {
+            if !args.contains(flag), let value = environment[name], !value.isEmpty { args += [flag, value] }
+        }
+        launchArguments = args
         func option(_ name: String) -> String? { guard let n = args.firstIndex(of: name), n + 1 < args.count else { return nil }; return args[n + 1] }
         chinese = (option("--language") ?? Locale.preferredLanguages.first ?? "en").lowercased().hasPrefix("zh")
         if let value = option("--track") { track = value }
         if let value = option("--volume"), let level = Double(value) { volume = level }
     }
     func text(_ en: String, _ zh: String) -> String { chinese ? zh : en }
+    var statusText: String {
+        switch state.status {
+        case "idle": return text("Ready", "就绪")
+        case "buffering": return text("Buffering", "缓冲中")
+        case "playing": return text("Playing", "播放中")
+        case "paused": return text("Paused", "已暂停")
+        case "ended": return text("Ended", "已结束")
+        case "error": return text("Playback error", "播放错误")
+        default: return state.status
+        }
+    }
     var active: Bool { ["playing", "buffering", "paused"].contains(state.status) }
     var canPlay: Bool { alive && !track.isEmpty && track.count <= 24 && track.allSatisfy { "0123456789".contains($0) } }
     func start() {
@@ -38,7 +55,7 @@ struct PlaybackState: Decodable {
         let child = Process(), stdin = Pipe(), stdout = Pipe()
         let folder = Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS")
         child.executableURL = folder.appendingPathComponent("amcore-demo")
-        child.arguments = ["--json", "--language", chinese ? "zh-CN" : "en"] + Array(CommandLine.arguments.dropFirst())
+        child.arguments = ["--json", "--language", chinese ? "zh-CN" : "en", "--bundle", Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/native/darwin-arm64").path] + launchArguments
         child.standardInput = stdin; child.standardOutput = stdout; child.standardError = FileHandle.nullDevice
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData; guard !data.isEmpty else { return }
@@ -122,7 +139,7 @@ struct PlayerView: View {
                     Text(model.state.outputRate.map { String(format: "%.1f kHz", $0 / 1000) } ?? "—").font(.system(.body, design: .monospaced))
                 }
             }.padding(14).background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.04)))
-            Text(model.message.isEmpty ? model.text("Playback: ", "播放状态：") + model.state.status : model.message)
+            Text(model.message.isEmpty ? model.text("Playback: ", "播放状态：") + model.statusText : model.message)
                 .font(.caption).foregroundStyle(.secondary).lineLimit(2).frame(height: 26, alignment: .top)
             Text(model.text("Source quality and system output are reported separately. Exclusive output is not enabled.", "源格式与系统输出分别显示，当前未使用独占输出。"))
                 .font(.caption2).foregroundStyle(.tertiary)

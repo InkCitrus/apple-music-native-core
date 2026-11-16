@@ -23,3 +23,5 @@ python3 examples/miniplayer/build_macos.py
 ```
 
 The result is `build/demo/Native Core Demo.app`. The small SwiftUI window controls the direct Go example; it does not use the daemon. Its executable forwards `--session`, `--runtime`, `--track`, `--volume` and `--language` flags to the Go example, so the same dedicated test session can be reused without copying account files.
+
+GUI launchers can also supply `AMCORE_DEMO_SESSION`, `AMCORE_DEMO_RUNTIME`, `AMCORE_DEMO_TRACK`, `AMCORE_DEMO_VOLUME` and `AMCORE_DEMO_LANGUAGE`. These accept the same configuration values as the corresponding flags; they are not account credentials. Explicit flags take precedence. Never put session contents or tokens into launcher configuration.
