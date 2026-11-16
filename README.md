@@ -4,7 +4,7 @@ A headless Apple Music playback core for macOS ARM64, Windows x64 and Linux x64.
 
 This is an experimental extraction of the MyGo Music lossless prototype. Its architecture is similar to a small library/daemon such as librespot. Authorization and licensed sample decryption still run in Apple's native Android libraries through a compatibility loader; this is **not** a clean-room implementation of Apple's protocol and is not affiliated with Apple.
 
-The repository is private during review. Other developers need repository access to fetch the Go module; embedding the daemon only requires its native bundle and the corresponding notices/source.
+Applications may embed the Go module or use the standalone daemon and native bundle. The minimal player example demonstrates direct library calls, with an optional native macOS control window.
 
 ## Build and run
 
@@ -46,6 +46,8 @@ The process listens on no network ports. See [the protocol](docs/PROTOCOL.md) an
 Go applications can use `player.New(player.Config{Native: native.Config{...}})` directly. `catalog`, `stream`, `codec`, `audio`, `native`, `auth` and `service` are separate packages. Custom applications can provide their own sign-in form through `auth.Prompt`, or their own PCM sink through `player.Config.OpenOutput`. This allows application-specific UI without duplicating the decoder or session management.
 
 ## Quality and supported scope
+
+The [minimal player](examples/miniplayer/) embeds the Go library directly and supports account connection, playback, pause, seek, volume and state reporting without MyGo Music or the stdio daemon. Native bundles include `amcore-demo[.exe]` for this example.
 
 `hires` chooses the highest advertised ALAC variant. `lossless` chooses ALAC up to 48 kHz. AAC fallback is intentionally absent. Current full playback supports catalog songs and library songs with a catalog mapping; live radio, uploaded/matched-only files, AirPlay enumeration, exclusive audio output, offline downloads and gapless cross-track output are not implemented.
 

@@ -25,6 +25,8 @@ def main():
     if oskey=='windows':
         env['PATH']=str(Path(args.msys)/'ucrt64/bin')+os.pathsep+env.get('PATH','');env['CC']='gcc';env['CXX']='g++'
     run(['go','build','-trimpath','-ldflags=-s -w','-o',binary,'./cmd/amcore'],env=env)
+    demo=out/('amcore-demo.exe' if oskey=='windows' else 'amcore-demo')
+    run(['go','build','-trimpath','-ldflags=-s -w','-o',demo,'./examples/miniplayer'],env=env)
     if oskey=='darwin':
         if args.deps:
             lock=json.loads((ROOT/'native/macos/dependencies-lock.json').read_text())
@@ -56,6 +58,7 @@ def main():
                 if file.suffix.lower() in ['.exe','.dll']:shutil.copy2(file,bundle/file.name)
                 if file.suffix.lower()=='.dll':shutil.copy2(file,out/file.name)
             copy_windows_dependencies(binary,out,Path(args.msys)/'ucrt64/bin')
+            copy_windows_dependencies(demo,out,Path(args.msys)/'ucrt64/bin')
         else:
             run([sys.executable,'scripts/rebuild_linux_client.py'])
             build=ROOT/'build/linux-helper';build.mkdir(parents=True,exist_ok=True)

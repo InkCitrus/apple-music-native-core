@@ -56,6 +56,9 @@ jobs:
       - name: Build Windows native bundle
         if: runner.os == 'Windows'
         run: python scripts/build.py --msys "$env:AMCORE_MSYS"
+      - name: Build optional native demo window
+        if: runner.os == 'macOS'
+        run: python3 examples/miniplayer/build_macos.py
       - name: Check Windows bundle without compiler on PATH
         if: runner.os == 'Windows'
         shell: pwsh
@@ -63,6 +66,8 @@ jobs:
           $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
           & .\build\bundle\amcore.exe version
           if ($LASTEXITCODE -ne 0) { throw 'Standalone core could not start' }
+          & .\build\bundle\amcore-demo.exe --help
+          if ($LASTEXITCODE -ne 0) { throw 'Direct Go player example could not start' }
       - name: Bundle source and dependency notices
         if: runner.os != 'Windows'
         run: python3 scripts/bundle_sources.py
@@ -73,5 +78,17 @@ jobs:
         with:
           name: amcore-${{ matrix.platform }}
           path: build/bundle/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Attach demo source and notices
+        if: runner.os == 'macOS'
+        run: |
+          cp build/bundle/corresponding-source.tar.gz build/bundle/LICENSE build/bundle/THIRD_PARTY.md build/demo/
+          cp examples/miniplayer/README.md build/demo/
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'macOS'
+        with:
+          name: amcore-demo-darwin-arm64
+          path: build/demo/
           retention-days: 14
           if-no-files-found: error
