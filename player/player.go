@@ -149,37 +149,25 @@ func (p *Player) Play(ctx context.Context, id string, position int64, quality st
 }
 func (p *Player) run(j *job, resolver Resolver, id, quality string) {
 	defer close(j.done)
-	plan, err := resolver.Resolve(j.ctx, id, quality)
+	var plan catalog.Plan
 	var keys Keys
-	if err == nil {
-		p.mu.Lock()
-		keys = p.keys
-		p.mu.Unlock()
-		if keys == nil && j.ctx.Err() == nil {
-			if p.config.OpenKeys != nil {
-				keys, err = p.config.OpenKeys()
-			} else {
-				initCtx, cancel := context.WithCancel(context.Background())
-				started := make(chan struct{})
-				go func() {
-					select {
-					case <-j.ctx.Done():
-						cancel()
-					case <-started:
-					}
-				}()
-				keys, err = native.StartContext(initCtx, p.config.Native)
-				close(started)
-				if err != nil {
-					cancel()
-				}
-			}
+	var err error
+	// Resuming the native SDK refreshes cached API tokens before catalog access.
+	if p.config.Resolver == nil {
+		keys, err = p.openKeys(j.ctx)
+		if err == nil {
+			var tokens catalog.Tokens
+			tokens, err = catalog.LoadTokens(p.config.Native.Profile)
 			if err == nil {
-				p.mu.Lock()
-				p.keys = keys
-				p.mu.Unlock()
+				resolver = catalog.New(tokens)
 			}
 		}
+	}
+	if err == nil && j.ctx.Err() == nil {
+		plan, err = resolver.Resolve(j.ctx, id, quality)
+	}
+	if err == nil && keys == nil && j.ctx.Err() == nil {
+		keys, err = p.openKeys(j.ctx)
 	}
 	var format codec.Format
 	if err == nil && j.ctx.Err() == nil {
@@ -337,4 +325,37 @@ func (p *Player) release(closed bool) {
 	if keys != nil {
 		keys.Close()
 	}
+}
+
+func (p *Player) openKeys(ctx context.Context) (Keys, error) {
+	p.mu.Lock()
+	keys := p.keys
+	p.mu.Unlock()
+	var err error
+	if keys == nil && ctx.Err() == nil {
+		if p.config.OpenKeys != nil {
+			keys, err = p.config.OpenKeys()
+		} else {
+			initCtx, cancel := context.WithCancel(context.Background())
+			started := make(chan struct{})
+			go func() {
+				select {
+				case <-ctx.Done():
+					cancel()
+				case <-started:
+				}
+			}()
+			keys, err = native.StartContext(initCtx, p.config.Native)
+			close(started)
+			if err != nil {
+				cancel()
+			}
+		}
+		if err == nil {
+			p.mu.Lock()
+			p.keys = keys
+			p.mu.Unlock()
+		}
+	}
+	return keys, err
 }

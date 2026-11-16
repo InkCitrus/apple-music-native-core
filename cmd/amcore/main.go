@@ -22,6 +22,7 @@ func main() {
 	bundle := flag.String("bundle", filepath.Join(bin, "native", runtime.GOOS+"-"+runtime.GOARCH), "native host bundle directory")
 	runtimeDir := flag.String("runtime", "", "runtime directory (default: DATA/runtime)")
 	helper := flag.String("helper", "", "native host executable (default: BUNDLE/native-helper)")
+	session := flag.String("session", "", "dedicated session directory (default: DATA/session)")
 	flag.Parse()
 	ctx := context.Background()
 	if _, e := runtimefiles.Platform(); e != nil {
@@ -34,7 +35,10 @@ func main() {
 	if *helper == "" {
 		*helper = filepath.Join(*bundle, runtimefiles.HelperName())
 	}
-	c := native.Config{Helper: *helper, Runtime: *runtimeDir, Profile: filepath.Join(*data, "session")}
+	if *session == "" {
+		*session = filepath.Join(*data, "session")
+	}
+	c := native.Config{Helper: *helper, Runtime: *runtimeDir, Profile: *session}
 	setup := func(ctx context.Context) error { return runtimefiles.Setup(ctx, c.Runtime, *bundle) }
 	mode := "serve"
 	if len(flag.Args()) > 0 {
