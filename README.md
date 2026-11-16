@@ -21,7 +21,7 @@ Windows uses `build\bundle\amcore.exe`. Install MSYS2 UCRT64 GCC, make, clang an
 
 The build produces `build/bundle/amcore[.exe]` and `build/bundle/native/PLATFORM/`. Keep the directory structure intact. CI builds the same bundles without signing in to any account or fetching Apple's SDK libraries.
 
-For distribution, commit the source used for the build and run `python3 scripts/bundle_sources.py` (Windows: add `--msys C:\msys64`). This adds license texts, a corresponding source archive and SHA-256 build metadata. macOS dependency sources and nested submodules are included in that archive when present. `dependency-sources/` contains their snapshots; the regular build fetches the same pinned revisions. Windows bundles include the DLLs needed to run without an installed compiler.
+For distribution, commit the source used for the build and run `python3 scripts/bundle_sources.py` (Windows: add `--msys C:\msys64`). This adds license texts, a corresponding source archive and SHA-256 build metadata. macOS dependency sources and nested submodules are included in that archive when present, omitting unrelated upstream test data, benchmarks and prebuilt binaries. `dependency-sources/` contains their snapshots; the regular build fetches the same pinned revisions. Windows bundles include the DLLs needed to run without an installed compiler.
 
 `setup` downloads checksum-pinned SDK dependencies separately. Runtime libraries and private sessions are stored in separate `DATA/runtime` and `DATA/session` directories. `auth` asks for account details and verification codes in system dialogs and passes them to the native helper using private pipes. An active subscription and account access to the requested song are required.
 

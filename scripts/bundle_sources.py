@@ -8,10 +8,14 @@ ROOT = Path(__file__).resolve().parents[1]
 def git(directory, *args):
     return subprocess.check_output(['git', '-C', str(directory), *args])
 
-def add_repository(archive, directory, prefix, revision):
+def add_repository(archive, directory, prefix, revision, dependency=False):
     data = git(directory, 'archive', '--format=tar', '--prefix='+prefix+'/', revision)
     with tarfile.open(fileobj=io.BytesIO(data)) as source:
         for member in source:
+            if dependency:
+                parts = Path(member.name).parts
+                if any(part in {'tests', 'test', 'testdata', 'benchmarks', 'prebuilt', 'prebuilts', 'fuzz', 'fuzzers'} for part in parts): continue
+                if Path(member.name).suffix.lower() in {'.apk', '.so', '.dll', '.exe', '.o', '.a', '.zip'}: continue
             archive.addfile(member, source.extractfile(member) if member.isfile() else None)
     # git archive omits submodule contents. Include their exact locked sources.
     for entry in git(directory, 'ls-tree', '-r', '-z', revision).split(b'\0'):
@@ -20,7 +24,7 @@ def add_repository(archive, directory, prefix, revision):
         mode, _, commit = metadata.decode().split()
         if mode == '160000':
             name = path.decode()
-            add_repository(archive, directory/name, prefix+'/'+name, commit)
+            add_repository(archive, directory/name, prefix+'/'+name, commit, dependency)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -55,7 +59,7 @@ def main():
             if not directory.exists(): continue
             actual = git(directory, 'rev-parse', 'HEAD').decode().strip()
             if actual != info['revision']: raise RuntimeError('Unexpected dependency revision: '+name)
-            add_repository(archive, directory, 'dependency-sources/'+name, actual)
+            add_repository(archive, directory, 'dependency-sources/'+name, actual, True)
             dependencies[name] = actual
     for name in ['THIRD_PARTY.md', 'LICENSE']:
         shutil.copy2(ROOT/name, bundle/name)
@@ -63,7 +67,8 @@ def main():
              for p in sorted(bundle.rglob('*')) if p.is_file() and p.name != 'build-info.json'}
     dirty = bool(git(ROOT, 'diff', 'HEAD', '--name-only').strip())
     (bundle/'build-info.json').write_text(json.dumps({'repository':'https://github.com/InkCitrus/apple-music-native-core',
-        'commit':revision, 'sourceDirty':dirty, 'protocol':1, 'dependencySources':dependencies, 'sha256':files}, indent=2)+'\n')
+        'commit':revision, 'sourceDirty':dirty, 'protocol':1, 'dependencySources':dependencies,
+        'dependencySourceFilter':'upstream tests, benchmarks and prebuilt binaries omitted', 'sha256':files}, indent=2)+'\n')
     print('Attached corresponding public source, license texts and build commit '+revision)
 
 if __name__ == '__main__': main()
