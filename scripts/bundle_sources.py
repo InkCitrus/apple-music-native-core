@@ -15,7 +15,8 @@ def add_repository(archive, directory, prefix, revision, dependency=False):
             if dependency:
                 parts = Path(member.name).parts
                 if any(part in {'tests', 'test', 'testdata', 'benchmarks', 'prebuilt', 'prebuilts', 'fuzz', 'fuzzers'} for part in parts): continue
-                if Path(member.name).suffix.lower() in {'.apk', '.so', '.dll', '.exe', '.o', '.a', '.zip'}: continue
+                if Path(member.name).suffix.lower() in {'.apk', '.so', '.dll', '.exe', '.o', '.a', '.zip',
+                    '.pem', '.pk8', '.p12', '.pfx', '.key', '.jks', '.keystore', '.avbpubkey'}: continue
             archive.addfile(member, source.extractfile(member) if member.isfile() else None)
     # git archive omits submodule contents. Include their exact locked sources.
     for entry in git(directory, 'ls-tree', '-r', '-z', revision).split(b'\0'):
@@ -68,7 +69,7 @@ def main():
     dirty = bool(git(ROOT, 'diff', 'HEAD', '--name-only').strip())
     (bundle/'build-info.json').write_text(json.dumps({'repository':'https://github.com/InkCitrus/apple-music-native-core',
         'commit':revision, 'sourceDirty':dirty, 'protocol':1, 'dependencySources':dependencies,
-        'dependencySourceFilter':'upstream tests, benchmarks and prebuilt binaries omitted', 'sha256':files}, indent=2)+'\n')
+        'dependencySourceFilter':'upstream tests, benchmarks, prebuilt binaries and unused signing material omitted', 'sha256':files}, indent=2)+'\n')
     print('Attached corresponding public source, license texts and build commit '+revision)
 
 if __name__ == '__main__': main()
