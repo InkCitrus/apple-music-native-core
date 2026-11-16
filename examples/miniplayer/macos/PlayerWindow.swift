@@ -9,7 +9,8 @@ struct PlaybackState: Decodable {
     var volume: Double = 15
     var format: SourceFormat?
     var outputRate: Double?
-    enum CodingKeys: String, CodingKey { case status, position, duration, volume, format, outputRate }
+    var trackId: String?
+    enum CodingKeys: String, CodingKey { case status, position, duration, volume, format, outputRate, trackId }
 }
 @MainActor final class PlayerModel: ObservableObject {
     @Published var track = "1783644617"
@@ -73,7 +74,8 @@ struct PlaybackState: Decodable {
         while let end = output.firstIndex(of: 10) {
             let line = output.prefix(upTo: end); output.removeSubrange(...end)
             guard let event = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
-            if event["event"] as? String == "state", let value = event["value"], let data = try? JSONSerialization.data(withJSONObject: value), let next = try? JSONDecoder().decode(PlaybackState.self, from: data) {
+            if event["event"] as? String == "state", let value = event["value"], let data = try? JSONSerialization.data(withJSONObject: value), var next = try? JSONDecoder().decode(PlaybackState.self, from: data) {
+                if next.duration == 0, next.position > 0, next.trackId == state.trackId { next.duration = state.duration }
                 state = next
                 if !editingPosition { position = Double(next.position) / 1000 }
                 if next.status == "error" { message = text("Playback failed. Check account access and runtime setup.", "播放失败，请检查账号授权及运行库。") }
@@ -158,6 +160,7 @@ struct PlayerView: View {
         window.center(); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
         self.window = window
     }
+    func applicationWillTerminate(_ notification: Notification) { model.stop() }
     func windowShouldClose(_ sender: NSWindow) -> Bool { model.stop(); NSApp.terminate(nil); return true }
 }
 @main struct PlayerApplication {

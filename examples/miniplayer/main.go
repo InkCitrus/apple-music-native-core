@@ -121,18 +121,18 @@ func main() {
 	}()
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	lastStatus := ""
-	lastSecond := int64(-1)
+	lastSnapshot := ""
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			s := p.State()
-			if s.Status != lastStatus || s.Position/1000 != lastSecond {
+			snapshot := p.State()
+			snapshot.Position /= 1000
+			encoded, _ := json.Marshal(snapshot)
+			if current := string(encoded); current != lastSnapshot {
 				show()
-				lastStatus = s.Status
-				lastSecond = s.Position / 1000
+				lastSnapshot = current
 			}
 		case line, ok := <-commands:
 			if !ok {
