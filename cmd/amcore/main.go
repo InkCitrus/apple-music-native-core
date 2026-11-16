@@ -22,6 +22,8 @@ func main() {
 	bundle := flag.String("bundle", filepath.Join(bin, "native", runtime.GOOS+"-"+runtime.GOARCH), "native host bundle directory")
 	runtimeDir := flag.String("runtime", "", "runtime directory (default: DATA/runtime)")
 	helper := flag.String("helper", "", "native host executable (default: BUNDLE/native-helper)")
+	language := flag.String("language", "", "account window language, e.g. en or zh-CN")
+	appName := flag.String("app-name", "Apple Music Native Core", "embedding application name shown in account window")
 	session := flag.String("session", "", "dedicated session directory (default: DATA/session)")
 	flag.Parse()
 	ctx := context.Background()
@@ -47,16 +49,16 @@ func main() {
 	var err error
 	switch mode {
 	case "serve":
-		err = service.New(service.Config{Native: c, Setup: setup}).Serve(ctx, os.Stdin, os.Stdout)
+		err = service.New(service.Config{Native: c, Setup: setup, Prompt: auth.SystemPrompt{Language: *language, AppName: *appName}}).Serve(ctx, os.Stdin, os.Stdout)
 	case "setup":
 		err = setup(ctx)
 	case "auth":
 		err = setup(ctx)
 		if err == nil {
-			err = auth.SignIn(ctx, c, auth.SystemPrompt{})
+			err = auth.SignIn(ctx, c, auth.SystemPrompt{Language: *language, AppName: *appName})
 		}
 	case "version":
-		fmt.Println("apple-music-native-core 0.1.0 / protocol 1")
+		fmt.Println("apple-music-native-core 0.1.1 / protocol 1")
 	default:
 		err = fmt.Errorf("unknown command")
 	}

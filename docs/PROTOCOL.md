@@ -1,6 +1,6 @@
 # Stdio protocol v1
 
-Launch `amcore --data-dir PRIVATE_DIR serve`. Keep stdin open. UTF-8 JSON Lines, maximum request line 64 KiB. A request has a positive integer `id`, `method`, and optional object `params`. Replies may arrive out of order; always match `id`. Await control replies when command order matters. There is no HTTP/WebSocket server.
+Launch `amcore --data-dir PRIVATE_DIR --app-name "Your App" --language en serve`. The client name labels the account connection window; it never impersonates an Apple-hosted page. `zh-CN` selects Simplified Chinese and other unsupported languages fall back to English. Keep stdin open. UTF-8 JSON Lines, maximum request line 64 KiB. A request has a positive integer `id`, `method`, and optional object `params`. Replies may arrive out of order; always match `id`. Await control replies when command order matters. There is no HTTP/WebSocket server.
 
 Success: `{"id":1,"ok":true,"result":{...}}`.
 Failure: `{"id":1,"ok":false,"error":{"code":"signIn","message":"Sign in using the native account window"}}`.

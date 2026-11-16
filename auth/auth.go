@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -21,7 +22,10 @@ type Prompt interface {
 	Credentials(context.Context) (string, string, error)
 	Code(context.Context) (string, error)
 }
-type SystemPrompt struct{}
+type SystemPrompt struct {
+	Language string
+	AppName  string
+}
 
 func output(ctx context.Context, name string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
@@ -32,76 +36,93 @@ func output(ctx context.Context, name string, args ...string) (string, error) {
 	}
 	return strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r"), nil
 }
-func (SystemPrompt) Credentials(ctx context.Context) (string, string, error) {
+func (system SystemPrompt) Credentials(ctx context.Context) (string, string, error) {
+	text := labels(system.Language)
+	client := system.clientName()
+	description := strings.ReplaceAll(text["description"], "%@", client)
 	switch runtime.GOOS {
 	case "darwin":
-		u, e := output(ctx, "/usr/bin/osascript", "-e", `text returned of (display dialog "Apple Music: Apple Account" default answer "" with title "Apple Music Native Core")`)
-		if e != nil {
-			return "", "", e
-		}
-		p, e := output(ctx, "/usr/bin/osascript", "-e", `text returned of (display dialog "Apple Music: Password" default answer "" with hidden answer with title "Apple Music Native Core")`)
-		return u, p, e
+		return "", "", errors.New("use SignIn to open the native account window")
 	case "windows":
-		s, e := output(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command", windowsForm(false))
-		if e != nil {
-			return "", "", e
+		data, err := output(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command", system.windowsForm(false))
+		if err != nil {
+			return "", "", err
 		}
 		var fields []string
-		if json.Unmarshal([]byte(s), &fields) != nil || len(fields) != 2 {
+		if json.Unmarshal([]byte(data), &fields) != nil || len(fields) != 2 {
 			return "", "", errors.New("invalid sign-in dialog")
 		}
-		return fields[0], fields[1], nil
+		return strings.TrimSpace(fields[0]), fields[1], nil
 	default:
-		if _, e := exec.LookPath("zenity"); e == nil {
-			s, e := output(ctx, "zenity", "--forms", "--title=Apple Music Native Core", "--text=Sign in to Apple Music", "--separator=\n", "--add-entry=Apple Account", "--add-password=Password")
-			a := strings.SplitN(s, "\n", 2)
-			if e != nil || len(a) != 2 {
+		if _, err := exec.LookPath("zenity"); err == nil {
+			data, err := output(ctx, "zenity", "--forms", "--title="+client, "--text="+description, "--separator=\n", "--add-entry="+text["account_label"], "--add-password="+text["password_label"])
+			fields := strings.SplitN(data, "\n", 2)
+			if err != nil || len(fields) != 2 {
 				return "", "", errors.New("sign-in cancelled")
 			}
-			return a[0], a[1], nil
+			return strings.TrimSpace(fields[0]), fields[1], nil
 		}
-		u, e := output(ctx, "kdialog", "--title", "Apple Music Native Core", "--inputbox", "Apple Account")
-		if e != nil {
-			return "", "", e
+		username, err := output(ctx, "kdialog", "--title", client, "--inputbox", text["account_label"])
+		if err != nil {
+			return "", "", err
 		}
-		p, e := output(ctx, "kdialog", "--title", "Apple Music Native Core", "--password", "Password")
-		return u, p, e
+		password, err := output(ctx, "kdialog", "--title", client, "--password", text["password_label"])
+		return strings.TrimSpace(username), password, err
 	}
 }
-func (SystemPrompt) Code(ctx context.Context) (string, error) {
+func (system SystemPrompt) Code(ctx context.Context) (string, error) {
+	text := labels(system.Language)
 	switch runtime.GOOS {
 	case "darwin":
-		return output(ctx, "/usr/bin/osascript", "-e", `text returned of (display dialog "Apple Music: 6-digit verification code" default answer "" with title "Apple Music Native Core")`)
+		return "", errors.New("use SignIn to open the native account window")
 	case "windows":
-		return output(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command", windowsForm(true))
+		return output(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-STA", "-Command", system.windowsForm(true))
 	default:
-		if _, e := exec.LookPath("zenity"); e == nil {
-			return output(ctx, "zenity", "--entry", "--title=Apple Music Native Core", "--text=6-digit verification code")
+		if _, err := exec.LookPath("zenity"); err == nil {
+			return output(ctx, "zenity", "--entry", "--title="+system.clientName(), "--text="+text["verify_description"])
 		}
-		return output(ctx, "kdialog", "--title", "Apple Music Native Core", "--inputbox", "6-digit verification code")
+		return output(ctx, "kdialog", "--title", system.clientName(), "--inputbox", text["verify_description"])
 	}
-}
-func windowsForm(code bool) string {
-	// All script text is static. Only the anonymous stdout pipe returns user input.
-	fields := `$u=New-Object Windows.Forms.TextBox;$u.Location=New-Object Drawing.Point(20,45);$u.Width=320;$f.Controls.Add($u);$p=New-Object Windows.Forms.TextBox;$p.Location=New-Object Drawing.Point(20,100);$p.Width=320;$p.UseSystemPasswordChar=$true;$f.Controls.Add($p);$l.Text='Apple Account and password';`
-	result := `ConvertTo-Json -Compress -InputObject @($u.Text,$p.Text)`
-	if code {
-		fields = `$u=New-Object Windows.Forms.TextBox;$u.Location=New-Object Drawing.Point(20,65);$u.Width=320;$u.MaxLength=6;$f.Controls.Add($u);$l.Text='6-digit verification code';`
-		result = `[Console]::WriteLine($u.Text)`
-	}
-	return `[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);Add-Type -AssemblyName System.Windows.Forms;Add-Type -AssemblyName System.Drawing;$f=New-Object Windows.Forms.Form;$f.Text='Apple Music Native Core';$f.ClientSize=New-Object Drawing.Size(365,190);$f.StartPosition='CenterScreen';$f.TopMost=$true;$l=New-Object Windows.Forms.Label;$l.Location=New-Object Drawing.Point(20,15);$l.Width=325;$f.Controls.Add($l);` + fields + `$b=New-Object Windows.Forms.Button;$b.Text='Continue';$b.Location=New-Object Drawing.Point(240,145);$b.DialogResult=[Windows.Forms.DialogResult]::OK;$f.Controls.Add($b);$f.AcceptButton=$b;if($f.ShowDialog() -ne [Windows.Forms.DialogResult]::OK){exit 1};` + result
 }
 
 // SignIn is interactive only through Prompt. Its result contains no credentials.
 func SignIn(ctx context.Context, c native.Config, prompt Prompt) error {
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
+	system, isSystem := prompt.(SystemPrompt)
+	if pointer, ok := prompt.(*SystemPrompt); ok && pointer != nil {
+		system, isSystem = *pointer, true
+	}
+	if isSystem && runtime.GOOS == "darwin" {
+		window, err := startWindow(ctx, cancel, filepath.Join(filepath.Dir(c.Helper), "AccountWindow.app", "Contents", "MacOS", "account-ui"), system)
+		if err != nil {
+			return err
+		}
+		defer window.Close()
+		for {
+			err = signInOnce(ctx, c, window)
+			if err == nil {
+				window.Complete(ctx)
+				return nil
+			}
+			if ctx.Err() != nil || !window.Retry(ctx, err) {
+				return err
+			}
+		}
+	}
+	return signInOnce(ctx, c, prompt)
+}
+
+func signInOnce(ctx context.Context, c native.Config, prompt Prompt) error {
 	username, password, err := prompt.Credentials(ctx)
 	if err != nil {
 		return err
 	}
 	if username == "" || password == "" {
 		return errors.New("sign-in cancelled")
+	}
+	if status, ok := prompt.(interface{ Status(string) }); ok {
+		status.Status("signingIn")
 	}
 	args := []string{"--runtime", c.Runtime, "--session", c.Profile, "--mode", "auth"}
 	if runtime.GOOS == "darwin" {
@@ -130,10 +151,13 @@ func SignIn(ctx context.Context, c native.Config, prompt Prompt) error {
 	username = ""
 	password = ""
 	if err != nil {
+		cmd.Process.Kill()
 		cmd.Wait()
 		return errors.New("authorization pipe closed")
 	}
 	accepted := false
+	resultSeen := false
+	failure := "rejected"
 	s := bufio.NewScanner(stdout)
 	s.Buffer(make([]byte, 4096), 65536)
 	for s.Scan() {
@@ -141,9 +165,27 @@ func SignIn(ctx context.Context, c native.Config, prompt Prompt) error {
 			Event     string `json:"event"`
 			Challenge int    `json:"challenge"`
 			Ready     bool   `json:"nativeSignInVerified"`
+			Stage     string `json:"stage"`
+			Kind      string `json:"kind"`
+			Reason    string `json:"reason"`
 		}
 		if json.Unmarshal(s.Bytes(), &e) != nil {
 			continue
+		}
+		if e.Event == "stage" && (e.Stage == "session_lease" || e.Stage == "account_tokens") {
+			if status, ok := prompt.(interface{ Status(string) }); ok {
+				status.Status("session")
+			}
+		}
+		for _, reason := range []string{e.Kind, e.Reason} {
+			switch reason {
+			case "network_error":
+				failure = "network"
+			case "account_locked":
+				failure = "account"
+			case "terms_required":
+				failure = "terms"
+			}
 		}
 		if e.Event == "twoFactorRequired" {
 			code, pe := prompt.Code(ctx)
@@ -157,17 +199,29 @@ func SignIn(ctx context.Context, c native.Config, prompt Prompt) error {
 				cmd.Wait()
 				return errors.New("invalid verification code")
 			}
-			encoder.Encode(map[string]any{"method": "verify-code", "challenge": e.Challenge, "code": code})
+			writeErr := encoder.Encode(map[string]any{"method": "verify-code", "challenge": e.Challenge, "code": code})
 			code = ""
+			if writeErr != nil {
+				cmd.Process.Kill()
+				cmd.Wait()
+				return errors.New("authorization pipe closed")
+			}
+			if status, ok := prompt.(interface{ Status(string) }); ok {
+				status.Status("verifying")
+			}
 		}
 		if e.Event == "authResult" {
+			resultSeen = true
 			accepted = e.Ready
 		}
 	}
 	stdin.Close()
 	err = cmd.Wait()
+	if !resultSeen {
+		return errors.New("unavailable")
+	}
 	if err != nil || !accepted {
-		return errors.New("native authorization failed")
+		return errors.New(failure)
 	}
 	return nil
 }

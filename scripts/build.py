@@ -40,6 +40,11 @@ def main():
         run([cmake,'-S','native/macos','-B','build/macos','-DCMAKE_BUILD_TYPE=Release','-DCMAKE_OSX_DEPLOYMENT_TARGET=14.0','-DCMAKE_POLICY_VERSION_MINIMUM=3.5'])
         run([cmake,'--build','build/macos','--target','core-loader','-j','4'])
         shutil.copy2(ROOT/'build/macos/core-loader',bundle/'native-helper')
+        account=bundle/'AccountWindow.app/Contents';(account/'MacOS').mkdir(parents=True,exist_ok=True)
+        shutil.copy2(ROOT/'native/macos/account/Info.plist',account/'Info.plist')
+        shutil.copytree(ROOT/'auth/locales',account/'Resources/Localizations',dirs_exist_ok=True)
+        run(['swiftc','-O','-parse-as-library','-target','arm64-apple-macos14.0','native/macos/account/AccountWindow.swift','-o',account/'MacOS/account-ui'])
+        run(['codesign','--force','--sign','-',account.parent])
         run(['codesign','--force','--sign','-',bundle/'native-helper']);run(['codesign','--force','--sign','-',binary])
     else:
         runtime=ROOT/'runtime'/key;runtime.mkdir(parents=True,exist_ok=True)

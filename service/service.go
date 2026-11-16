@@ -130,7 +130,7 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 	}
 	switch r.Method {
 	case "hello":
-		return map[string]any{"protocol": ProtocolVersion, "version": "0.1.0", "formats": []string{"alac"}, "devices": []string{"default"}}, nil
+		return map[string]any{"protocol": ProtocolVersion, "version": "0.1.1", "formats": []string{"alac"}, "devices": []string{"default"}}, nil
 	case "doctor":
 		_, he := os.Stat(s.config.Native.Helper)
 		_, te := catalog.LoadTokens(s.config.Native.Profile)

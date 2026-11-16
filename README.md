@@ -17,7 +17,7 @@ build/bundle/amcore --data-dir ./data auth
 build/bundle/amcore --data-dir ./data serve
 ```
 
-Windows uses `build\bundle\amcore.exe`. Install MSYS2 UCRT64 GCC, make, clang and lld first; use `python scripts/build.py --msys C:\msys64`. macOS requires Apple Silicon, macOS 14+, Xcode command line tools and CMake 3.20+. The Linux bundle uses the system C/C++ runtime plus a pinned loader requiring glibc 2.38 or later; ALSA or PulseAudio supplies output. Linux sign-in dialogs require `zenity` or `kdialog` in a graphical session. Windows uses system PowerShell/WinForms; macOS uses system account/password dialogs. These dialogs are local to this core, not an Apple-hosted sign-in page.
+Windows uses `build\bundle\amcore.exe`. Install MSYS2 UCRT64 GCC, make, clang and lld first; use `python scripts/build.py --msys C:\msys64`. macOS requires Apple Silicon, macOS 14+, Xcode command line tools and CMake 3.20+. The Linux bundle uses the system C/C++ runtime plus a pinned loader requiring glibc 2.38 or later; ALSA or PulseAudio supplies output. Linux sign-in dialogs require `zenity` or `kdialog` in a graphical session. Windows uses system PowerShell/WinForms; macOS uses a native account connection window, attributed to the embedding application. These dialogs are local to this core, not an Apple-hosted sign-in page.
 
 The build produces `build/bundle/amcore[.exe]` and `build/bundle/native/PLATFORM/`. Keep the directory structure intact. CI builds the same bundles without signing in to any account or fetching Apple's SDK libraries.
 
@@ -27,7 +27,9 @@ For distribution, commit the source used for the build and run `python3 scripts/
 
 ## Call from another application
 
-Start one `amcore --data-dir PRIVATE_DIRECTORY serve` child. Write one JSON object per line to its stdin and parse replies by `id` on stdout. The process listens on no network ports. See [the protocol](docs/PROTOCOL.md) and [Node example](examples/node-client.mjs).
+Start one `amcore --data-dir PRIVATE_DIRECTORY serve` child. Write one JSON object per line to its stdin and parse replies by `id` on stdout. Pass `--app-name "Your App" --language zh-CN` to identify the client and select the account-window language. English and Simplified Chinese cover credentials, verification, progress and errors, with English fallback for other languages. The macOS window follows system light/dark appearance and runs only during authorization.
+
+The process listens on no network ports. See [the protocol](docs/PROTOCOL.md) and [Node example](examples/node-client.mjs).
 
 ```json
 {"id":1,"method":"hello"}
