@@ -1,9 +1,19 @@
 #!/usr/bin/env python3
 """Build a native bundle on its target OS; no account or SDK files are needed."""
 from pathlib import Path
-import argparse, hashlib, json, os, platform, shutil, subprocess, sys
+import argparse, hashlib, json, os, platform, re, shutil, subprocess, sys
 ROOT=Path(__file__).resolve().parents[1]
 def run(args,**kwargs): subprocess.run([str(s) for s in args],cwd=ROOT,check=True,**kwargs)
+def copy_windows_dependencies(binary, destination, compiler):
+    """The Go executable needs its own DLLs beside it, outside the helper folder."""
+    pending=[binary];seen=set()
+    while pending:
+        output=subprocess.check_output([str(compiler/'objdump.exe'),'-p',str(pending.pop())],text=True,errors='replace')
+        for name in re.findall(r'DLL Name:\s*(\S+)',output):
+            if name.lower() in seen:continue
+            seen.add(name.lower());source=compiler/name
+            if source.is_file():
+                target=destination/name;shutil.copy2(source,target);pending.append(target)
 def main():
     p=argparse.ArgumentParser();p.add_argument('--msys',default=r'C:\msys64');p.add_argument('--deps',type=Path,help='reuse an existing checkout of pinned macOS dependencies');args=p.parse_args()
     oskey={'darwin':'darwin','win32':'windows','linux':'linux'}.get(sys.platform)
@@ -40,6 +50,7 @@ def main():
             for file in source.iterdir():
                 if file.suffix.lower() in ['.exe','.dll']:shutil.copy2(file,bundle/file.name)
                 if file.suffix.lower()=='.dll':shutil.copy2(file,out/file.name)
+            copy_windows_dependencies(binary,out,Path(args.msys)/'ucrt64/bin')
         else:
             run([sys.executable,'scripts/rebuild_linux_client.py'])
             build=ROOT/'build/linux-helper';build.mkdir(parents=True,exist_ok=True)

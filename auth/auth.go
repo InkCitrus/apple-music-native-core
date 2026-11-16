@@ -30,7 +30,7 @@ func output(ctx context.Context, name string, args ...string) (string, error) {
 	if err != nil {
 		return "", errors.New("sign-in cancelled or system dialog unavailable")
 	}
-	return strings.TrimSpace(string(data)), nil
+	return strings.TrimSuffix(strings.TrimSuffix(string(data), "\n"), "\r"), nil
 }
 func (SystemPrompt) Credentials(ctx context.Context) (string, string, error) {
 	switch runtime.GOOS {

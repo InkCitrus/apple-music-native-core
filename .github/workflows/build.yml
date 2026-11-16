@@ -56,11 +56,19 @@ jobs:
       - name: Build Windows native bundle
         if: runner.os == 'Windows'
         run: python scripts/build.py --msys "$env:AMCORE_MSYS"
-      - name: Bundle source and dependency notices
-        shell: bash
+      - name: Check Windows bundle without compiler on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          cp THIRD_PARTY.md LICENSE build/bundle/
-          git archive --format=tar.gz HEAD -o build/bundle/corresponding-source.tar.gz
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          & .\build\bundle\amcore.exe version
+          if ($LASTEXITCODE -ne 0) { throw 'Standalone core could not start' }
+      - name: Bundle source and dependency notices
+        if: runner.os != 'Windows'
+        run: python3 scripts/bundle_sources.py
+      - name: Bundle Windows source and dependency notices
+        if: runner.os == 'Windows'
+        run: python scripts/bundle_sources.py --msys "$env:AMCORE_MSYS"
       - uses: actions/upload-artifact@v4
         with:
           name: amcore-${{ matrix.platform }}

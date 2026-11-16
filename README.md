@@ -4,6 +4,8 @@ A headless Apple Music playback core for macOS ARM64, Windows x64 and Linux x64.
 
 This is an experimental extraction of the MyGo Music lossless prototype. Its architecture is similar to a small library/daemon such as librespot. Authorization and licensed sample decryption still run in Apple's native Android libraries through a compatibility loader; this is **not** a clean-room implementation of Apple's protocol and is not affiliated with Apple.
 
+The repository is private during review. Other developers need repository access to fetch the Go module; embedding the daemon only requires its native bundle and the corresponding notices/source.
+
 ## Build and run
 
 Requires Go 1.26+, Python 3 for the build scripts, and a C/C++ compiler. Python is not a playback dependency. Run the build on the target OS:
@@ -18,6 +20,8 @@ build/bundle/amcore --data-dir ./data serve
 Windows uses `build\bundle\amcore.exe`. Install MSYS2 UCRT64 GCC, make, clang and lld first; use `python scripts/build.py --msys C:\msys64`. macOS requires Apple Silicon, macOS 14+, Xcode command line tools and CMake 3.20+. The Linux bundle uses the system C/C++ runtime plus a pinned loader requiring glibc 2.38 or later; ALSA or PulseAudio supplies output. Linux sign-in dialogs require `zenity` or `kdialog` in a graphical session. Windows uses system PowerShell/WinForms; macOS uses system account/password dialogs. These dialogs are local to this core, not an Apple-hosted sign-in page.
 
 The build produces `build/bundle/amcore[.exe]` and `build/bundle/native/PLATFORM/`. Keep the directory structure intact. CI builds the same bundles without signing in to any account or fetching Apple's SDK libraries.
+
+For distribution, commit the source used for the build and run `python3 scripts/bundle_sources.py` (Windows: add `--msys C:\msys64`). This adds license texts, a corresponding source archive and SHA-256 build metadata. macOS dependency sources and nested submodules are included in that archive when present. `dependency-sources/` contains their snapshots; the regular build fetches the same pinned revisions. Windows bundles include the DLLs needed to run without an installed compiler.
 
 `setup` downloads checksum-pinned SDK dependencies separately. Runtime libraries and private sessions are stored in separate `DATA/runtime` and `DATA/session` directories. `auth` asks for account details and verification codes in system dialogs and passes them to the native helper using private pipes. An active subscription and account access to the requested song are required.
 
@@ -43,7 +47,7 @@ Go applications can use `player.New(player.Config{Native: native.Config{...}})` 
 
 `hires` chooses the highest advertised ALAC variant. `lossless` chooses ALAC up to 48 kHz. AAC fallback is intentionally absent. Current full playback supports catalog songs and library songs with a catalog mapping; live radio, uploaded/matched-only files, AirPlay enumeration, exclusive audio output, offline downloads and gapless cross-track output are not implemented.
 
-The underlying prototype passed real subscriber ALAC 24-bit/96 kHz decode, playback, pause/resume, volume and a 90-second seek on macOS ARM64, Windows x64 and Linux x64/WSL2. The newly extracted library/daemon adds synthetic PCM equality, encrypted HLS/seek, cancellation, IPC and adapter tests. A complete real-account playback regression of the new plugin package is still required. Source format is reported separately from system output rate; bit-perfect physical DAC output has not been verified.
+The underlying prototype passed real subscriber ALAC 24-bit/96 kHz decode, playback, pause/resume, volume and a 90-second seek on macOS ARM64, Windows x64 and Linux x64/WSL2. The extracted daemon has also passed a muted real-account regression on macOS: 24-bit/96 kHz source, pause/resume, zero volume, seek while paused and clean stop. The new code builds and passes portable tests on all three native operating systems. A complete real-account playback regression of the new plugin package on Windows/Linux is still required. Source format is reported separately from system output rate; bit-perfect physical DAC output has not been verified. See [validation details](docs/VALIDATION.md).
 
 The previous Windows helper-only idle observation measured about 178 MiB resident memory and 0.026% of one logical CPU over 60 seconds, with stable RSS. That is not the whole plugin or long-running playback. Native libraries/loader dominate memory; this extraction does not claim librespot-level resource use. macOS Intel and Windows/Linux ARM64 have not been ported.
 
