@@ -58,7 +58,7 @@ func main() {
 			err = auth.SignIn(ctx, c, auth.SystemPrompt{Language: *language, AppName: *appName})
 		}
 	case "version":
-		fmt.Println("apple-music-native-core 0.1.2 / protocol 1")
+		fmt.Printf("apple-music-native-core %s / protocol %d\n", service.Version, service.ProtocolVersion)
 	default:
 		err = fmt.Errorf("unknown command")
 	}

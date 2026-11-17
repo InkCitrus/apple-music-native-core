@@ -11,7 +11,7 @@ resources=contents/'Resources';resources.mkdir(exist_ok=True)
 shutil.copytree(ROOT/'auth/locales',resources/'Localizations',dirs_exist_ok=True)
 if (binary/'native').exists():shutil.rmtree(binary/'native')
 shutil.copytree(bundle/'native/darwin-arm64',resources/'native/darwin-arm64',dirs_exist_ok=True)
-info={'CFBundleIdentifier':'dev.inkcitrus.nativecore.demo','CFBundleName':'Native Core Demo','CFBundleDisplayName':'Native Core Demo','CFBundleExecutable':'native-core-demo-ui','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.1.2','CFBundleVersion':'2','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'CFBundleDevelopmentRegion':'en','CFBundleLocalizations':['en','zh-Hans']}
+info={'CFBundleIdentifier':'dev.inkcitrus.nativecore.demo','CFBundleName':'Native Core Demo','CFBundleDisplayName':'Native Core Demo','CFBundleExecutable':'native-core-demo-ui','CFBundlePackageType':'APPL','CFBundleShortVersionString':'0.1.3','CFBundleVersion':'3','LSMinimumSystemVersion':'14.0','NSHighResolutionCapable':True,'CFBundleDevelopmentRegion':'en','CFBundleLocalizations':['en','zh-Hans']}
 (contents/'Info.plist').write_bytes(plistlib.dumps(info))
 subprocess.run(['swiftc','-O','-parse-as-library','-target','arm64-apple-macos14.0',str(ROOT/'native/macos/EditingMenu.swift'),str(ROOT/'examples/miniplayer/macos/PlayerWindow.swift'),'-o',str(binary/'native-core-demo-ui')],check=True)
 subprocess.run(['codesign','--force','--sign','-',str(app)],check=True)

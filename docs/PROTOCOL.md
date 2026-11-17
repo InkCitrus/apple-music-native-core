@@ -34,4 +34,6 @@ State example:
 
 Statuses: `idle`, `buffering`, `playing`, `paused`, `ended`, `error`. `buffering` is active playback intent and is not an end-of-track signal. `error` includes a safe error category. `format` describes the decoded source; `outputRate` reports the backend's available output-rate measurement, which is not proof of end-to-end device format or bit-perfect output.
 
+Native outputs may add `outputStats` with `underruns`, `queuedFrames`, and `capacityFrames`. Frames use the source sample rate. The underrun counter records an empty output queue while active, excluding intentional pause, cancellation and normal end-of-input. These are local output-health counters, without credentials, URLs or audio samples; they do not prove bit-perfect output or replace a listening check. Output capacity is approximately two seconds at each source sample rate. At most one encrypted HLS segment is prefetched ahead of the current segment, and it is discarded on cancellation.
+
 There is one decoder and one native key context in use at a time. The embedding application owns queue order. Poll state; after `ended`, choose the next track explicitly. No audio is written to disk. Incoming EOF cancels outstanding work and terminates owned helpers and dialogs.

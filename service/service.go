@@ -17,6 +17,7 @@ import (
 )
 
 const ProtocolVersion = 1
+const Version = "0.1.3"
 
 type Config struct {
 	Native native.Config
@@ -130,7 +131,7 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 	}
 	switch r.Method {
 	case "hello":
-		return map[string]any{"protocol": ProtocolVersion, "version": "0.1.1", "formats": []string{"alac"}, "devices": []string{"default"}}, nil
+		return map[string]any{"protocol": ProtocolVersion, "version": Version, "formats": []string{"alac"}, "devices": []string{"default"}}, nil
 	case "doctor":
 		_, he := os.Stat(s.config.Native.Helper)
 		_, te := catalog.LoadTokens(s.config.Native.Profile)
