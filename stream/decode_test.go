@@ -134,6 +134,41 @@ func TestInvalidRanges(t *testing.T) {
 	}
 }
 
+func TestParallelDRMKeysDoNotReplaceFairPlay(t *testing.T) {
+	fairplay := `#EXT-X-KEY:METHOD=SAMPLE-AES,URI="skd://license.invalid/first",KEYFORMAT="com.apple.streamingkeydelivery"`
+	widevine := `#EXT-X-KEY:METHOD=SAMPLE-AES,URI="data:text/plain;base64,SYNTHETIC_WIDEVINE",KEYFORMAT="urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed"`
+	playready := `#EXT-X-KEY:METHOD=SAMPLE-AES,URI="data:text/plain;base64,SYNTHETIC_PLAYREADY",KEYFORMAT="com.microsoft.playready"`
+	for _, declarations := range []string{
+		fairplay + "\n" + playready + "\n" + widevine,
+		widevine + "\n" + fairplay + "\n" + playready,
+		playready + "\n" + widevine + "\n" + fairplay,
+	} {
+		p := catalog.Plan{MediaURL: "https://media.invalid/song.m3u8", Playlist: "#EXTM3U\n" +
+			`#EXT-X-MAP:URI="audio",BYTERANGE="100@0"` + "\n" + declarations +
+			"\n#EXTINF:6,\n#EXT-X-BYTERANGE:100@100\naudio\n" +
+			playready + "\n#EXTINF:6,\n#EXT-X-BYTERANGE:100@200\naudio\n" +
+			strings.Replace(fairplay, "first", "rotated", 1) + "\n" + widevine +
+			"\n#EXTINF:6,\n#EXT-X-BYTERANGE:100@300\naudio\n#EXT-X-ENDLIST\n"}
+		_, segments, err := playlist(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(segments) != 3 || segments[0].Key != "skd://license.invalid/first" || segments[1].Key != segments[0].Key || segments[2].Key != "skd://license.invalid/rotated" {
+			t.Fatal("independent DRM declarations or key rotation changed the FairPlay context")
+		}
+	}
+}
+
+func TestMissingNativeDRMKeyFailsBeforeFetching(t *testing.T) {
+	p := catalog.Plan{MediaURL: "https://media.invalid/song.m3u8", Playlist: "#EXTM3U\n" +
+		`#EXT-X-MAP:URI="audio",BYTERANGE="100@0"` + "\n" +
+		`#EXT-X-KEY:METHOD=SAMPLE-AES,URI="data:text/plain;base64,SYNTHETIC",KEYFORMAT="com.microsoft.playready"` +
+		"\n#EXTINF:6,\n#EXT-X-BYTERANGE:100@100\naudio\n"}
+	if _, _, err := playlist(p); err == nil || err.Error() != "native FairPlay key unavailable" {
+		t.Fatal("accepted a playlist without a supported native key")
+	}
+}
+
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

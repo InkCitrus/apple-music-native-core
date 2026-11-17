@@ -85,7 +85,16 @@ func playlist(p catalog.Plan) (mediaRange, []mediaRange, error) {
 		line = strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(line, "#EXT-X-KEY:"):
-			key = strings.Split(attribute(line, "URI"), ",")[0]
+			// Each KEYFORMAT has its own key context. A Widevine or PlayReady
+			// declaration must not replace the native FairPlay key for this segment.
+			format := catalog.Attribute(line, "KEYFORMAT")
+			uri := attribute(line, "URI")
+			if format == "com.apple.streamingkeydelivery" || format == "" && strings.HasPrefix(uri, "skd://") {
+				if catalog.Attribute(line, "METHOD") != "SAMPLE-AES" || !strings.HasPrefix(uri, "skd://") {
+					return init, nil, errors.New("unsupported native key format")
+				}
+				key = strings.Split(uri, ",")[0]
+			}
 		case strings.HasPrefix(line, "#EXT-X-MAP:"):
 			o, n, e := byteRange(attribute(line, "BYTERANGE"))
 			if e != nil {
@@ -100,6 +109,9 @@ func playlist(p catalog.Plan) (mediaRange, []mediaRange, error) {
 				return init, nil, errors.New("invalid media duration")
 			}
 		case line != "" && !strings.HasPrefix(line, "#"):
+			if key == "" {
+				return init, nil, errors.New("native FairPlay key unavailable")
+			}
 			o, n, e := byteRange(rangeText)
 			if e != nil {
 				return init, nil, e
