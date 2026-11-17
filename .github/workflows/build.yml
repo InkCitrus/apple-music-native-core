@@ -93,3 +93,11 @@ jobs:
           path: build/demo/
           retention-days: 14
           if-no-files-found: error
+      - name: Package release archives on the build runner
+        run: python scripts/package_release.py --platform ${{ matrix.platform }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amcore-release-${{ matrix.platform }}
+          path: build/release/
+          retention-days: 14
+          if-no-files-found: error
