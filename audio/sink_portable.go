@@ -51,6 +51,11 @@ func (s *Sink) Volume(volume float32) error {
 }
 func (s *Sink) Position() float64      { return float64(C.pcm_queue_position(s.ptr)) }
 func (s *Sink) CurrentVolume() float64 { return float64(C.pcm_queue_get_volume(s.ptr)) }
+func (s *Sink) Stats() Stats {
+	var underruns, queued, capacity C.uint64_t
+	C.pcm_queue_stats(s.ptr, &underruns, &queued, &capacity)
+	return Stats{uint64(underruns), uint64(queued), uint64(capacity)}
+}
 func (s *Sink) Start() error {
 	if C.pcm_queue_start(s.ptr) != 0 {
 		return errors.New("audio start failed")

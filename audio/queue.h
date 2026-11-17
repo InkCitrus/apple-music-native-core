@@ -13,6 +13,7 @@ int pcm_queue_start(void* queue);
 void pcm_queue_abort(void* queue);
 double pcm_queue_close(void* queue);
 double pcm_queue_get_volume(void* queue);
+void pcm_queue_stats(void* queue,uint64_t* underruns,uint64_t* queued,uint64_t* capacity);
 #ifdef __cplusplus
 }
 #endif

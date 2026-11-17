@@ -16,14 +16,15 @@ import (
 )
 
 type State struct {
-	Status     string        `json:"status"`
-	TrackID    string        `json:"trackId,omitempty"`
-	Position   int64         `json:"position"` // milliseconds
-	Duration   int64         `json:"duration"`
-	Volume     float64       `json:"volume"`           // 0..100
-	Format     *codec.Format `json:"format,omitempty"` // source, not a DAC claim
-	OutputRate float64       `json:"outputRate,omitempty"`
-	Error      string        `json:"error,omitempty"`
+	Status      string        `json:"status"`
+	TrackID     string        `json:"trackId,omitempty"`
+	Position    int64         `json:"position"` // milliseconds
+	Duration    int64         `json:"duration"`
+	Volume      float64       `json:"volume"`           // 0..100
+	Format      *codec.Format `json:"format,omitempty"` // source, not a DAC claim
+	OutputRate  float64       `json:"outputRate,omitempty"`
+	Error       string        `json:"error,omitempty"`
+	OutputStats *audio.Stats  `json:"outputStats,omitempty"`
 }
 type Output interface {
 	Write([]byte) error
@@ -71,6 +72,10 @@ func (p *Player) State() State {
 	defer p.mu.Unlock()
 	s := p.state
 	if p.job != nil && p.job.sink != nil {
+		if output, ok := p.job.sink.(interface{ Stats() audio.Stats }); ok {
+			stats := output.Stats()
+			s.OutputStats = &stats
+		}
 		s.Position = p.job.offset + int64(math.Max(0, p.job.sink.Position())*1000)
 		if s.Duration > 0 && s.Position > s.Duration {
 			s.Position = s.Duration
@@ -229,6 +234,10 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string) {
 	p.mu.Lock()
 	if j.sink != nil {
 		sink := j.sink
+		if output, ok := sink.(interface{ Stats() audio.Stats }); ok {
+			stats := output.Stats()
+			p.state.OutputStats = &stats
+		}
 		j.sink = nil
 		if j.ctx.Err() != nil || err != nil {
 			sink.Abort()

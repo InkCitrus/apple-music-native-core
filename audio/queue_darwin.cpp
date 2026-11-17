@@ -7,19 +7,21 @@
 #include <vector>
 #include <cstring>
 #include <chrono>
+#include <algorithm>
 namespace {
 struct Queue {
  AudioQueueRef queue=nullptr;
  std::mutex mutex;std::condition_variable ready;
  std::vector<AudioQueueBufferRef> free;
- std::atomic<bool> aborted{false},paused{false};unsigned queued=0;bool started=false,failed=false;uint32_t bytesPerFrame=0;double rate=0;uint64_t completedFrames=0;
+ std::atomic<bool> aborted{false},paused{false},inputComplete{false};unsigned queued=0,startThreshold=3;bool started=false,failed=false;uint32_t bytesPerFrame=0;double rate=0;uint64_t completedFrames=0,queuedFrames=0,capacityFrames=0,underruns=0;
 };
-void available(void* user,AudioQueueRef,AudioQueueBufferRef buffer){auto q=static_cast<Queue*>(user);std::lock_guard<std::mutex> lock(q->mutex);q->completedFrames+=buffer->mAudioDataByteSize/q->bytesPerFrame;q->free.push_back(buffer);if(q->queued)--q->queued;q->ready.notify_all();}
+void available(void* user,AudioQueueRef,AudioQueueBufferRef buffer){auto q=static_cast<Queue*>(user);std::lock_guard<std::mutex> lock(q->mutex);auto frames=buffer->mAudioDataByteSize/q->bytesPerFrame;q->completedFrames+=frames;q->queuedFrames-=frames;q->free.push_back(buffer);if(q->queued)--q->queued;if(!q->queued&&!q->inputComplete.load()&&!q->paused.load()&&!q->aborted.load())++q->underruns;q->ready.notify_all();}
 }
 void* pcm_queue_new(uint32_t rate,uint32_t channels,uint32_t bits,float volume){
  auto q=new Queue;q->rate=rate;q->bytesPerFrame=channels*(bits/8);AudioStreamBasicDescription format{};format.mSampleRate=rate;format.mFormatID=kAudioFormatLinearPCM;format.mFormatFlags=kAudioFormatFlagIsSignedInteger|kAudioFormatFlagIsPacked;format.mFramesPerPacket=1;format.mChannelsPerFrame=channels;format.mBitsPerChannel=bits;format.mBytesPerFrame=q->bytesPerFrame;format.mBytesPerPacket=q->bytesPerFrame;
  if(AudioQueueNewOutput(&format,available,q,nullptr,nullptr,0,&q->queue)){delete q;return nullptr;}
- for(int i=0;i<8;++i){AudioQueueBufferRef buffer=nullptr;if(AudioQueueAllocateBuffer(q->queue,4096*q->bytesPerFrame,&buffer)){AudioQueueDispose(q->queue,true);delete q;return nullptr;}q->free.push_back(buffer);}
+ auto count=std::max(8u,(rate*2u+4095u)/4096u);q->capacityFrames=uint64_t(count)*4096u;q->startThreshold=std::max(3u,(rate/4u+4095u)/4096u);
+ for(unsigned i=0;i<count;++i){AudioQueueBufferRef buffer=nullptr;if(AudioQueueAllocateBuffer(q->queue,4096*q->bytesPerFrame,&buffer)){AudioQueueDispose(q->queue,true);delete q;return nullptr;}q->free.push_back(buffer);}
  AudioQueueSetParameter(q->queue,kAudioQueueParam_Volume,volume);return q;
 }
 int pcm_queue_write(void* ptr,const void* input,uint32_t bytes){
@@ -27,8 +29,9 @@ int pcm_queue_write(void* ptr,const void* input,uint32_t bytes){
  while(bytes){AudioQueueBufferRef buffer;std::atomic<bool> aborted{false},paused{false};unsigned queued=0;{
    std::unique_lock<std::mutex> lock(q->mutex);while(q->free.empty()&&!q->aborted.load())q->ready.wait_for(lock,std::chrono::milliseconds(50));if(q->aborted.load())return -1;buffer=q->free.back();q->free.pop_back();queued=++q->queued;}
   uint32_t size=bytes<buffer->mAudioDataBytesCapacity?bytes:buffer->mAudioDataBytesCapacity;memcpy(buffer->mAudioData,data,size);buffer->mAudioDataByteSize=size;
+  {std::lock_guard<std::mutex> lock(q->mutex);q->queuedFrames+=size/q->bytesPerFrame;}
   OSStatus error=AudioQueueEnqueueBuffer(q->queue,buffer,0,nullptr);if(error){q->failed=true;return int(error);}data+=size;bytes-=size;
-  if(!q->paused.load()&&!q->started&&queued>=3){error=AudioQueueStart(q->queue,nullptr);if(error){q->failed=true;return int(error);}q->started=true;}
+  if(!q->paused.load()&&!q->started&&queued>=q->startThreshold){error=AudioQueueStart(q->queue,nullptr);if(error){q->failed=true;return int(error);}q->started=true;}
  }
  return 0;
 }
@@ -40,6 +43,7 @@ double pcm_queue_hardware_rate(){
  AudioDeviceID device=0;UInt32 size=sizeof(device);AudioObjectPropertyAddress address{kAudioHardwarePropertyDefaultOutputDevice,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};if(AudioObjectGetPropertyData(kAudioObjectSystemObject,&address,0,nullptr,&size,&device))return 0;
  double rate=0;size=sizeof(rate);address={kAudioDevicePropertyNominalSampleRate,kAudioObjectPropertyScopeGlobal,kAudioObjectPropertyElementMain};if(AudioObjectGetPropertyData(device,&address,0,nullptr,&size,&rate))return 0;return rate;
 }
-int pcm_queue_start(void* p){auto q=static_cast<Queue*>(p);return q->paused.load()?0:AudioQueueStart(q->queue,nullptr);}
+int pcm_queue_start(void* p){auto q=static_cast<Queue*>(p);q->inputComplete.store(true);return q->paused.load()?0:AudioQueueStart(q->queue,nullptr);}
+void pcm_queue_stats(void* p,uint64_t* underruns,uint64_t* queued,uint64_t* capacity){auto q=static_cast<Queue*>(p);std::lock_guard<std::mutex> lock(q->mutex);*underruns=q->underruns;*queued=q->queuedFrames;*capacity=q->capacityFrames;}
 void pcm_queue_abort(void* p){auto q=static_cast<Queue*>(p);q->aborted.store(true);q->ready.notify_all();}
 double pcm_queue_close(void* ptr){if(!ptr)return 0;auto q=static_cast<Queue*>(ptr);if(!q->failed&&!q->aborted.load()){AudioQueueStart(q->queue,nullptr);std::unique_lock<std::mutex> lock(q->mutex);q->ready.wait_for(lock,std::chrono::seconds(5),[&]{return q->queued==0;});}AudioQueueStop(q->queue,true);AudioQueueDispose(q->queue,true);double seconds=q->completedFrames/q->rate;delete q;return seconds;}

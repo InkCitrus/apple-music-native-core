@@ -157,6 +157,39 @@ func fetch(ctx context.Context, r mediaRange) ([]byte, error) {
 	}
 	return data, nil
 }
+
+type prefetchedSegment struct {
+	media mediaRange
+	data  []byte
+	err   error
+}
+
+// The unbuffered handoff permits only the current segment and one encrypted
+// segment ahead. Network I/O overlaps decoding/output instead of starting only
+// when the output queue is almost empty. Cancellation stops an in-flight fetch.
+func prefetch(ctx context.Context, segments []mediaRange) (<-chan prefetchedSegment, <-chan struct{}) {
+	ready := make(chan prefetchedSegment)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer close(ready)
+		for _, segment := range segments {
+			if ctx.Err() != nil {
+				return
+			}
+			data, err := fetch(ctx, segment)
+			select {
+			case ready <- prefetchedSegment{segment, data, err}:
+			case <-ctx.Done():
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return ready, done
+}
 func decodeInit(data []byte) ([]track, *mp4.TrexBox, error) {
 	reader := bytes.NewReader(data)
 	var offset uint64
@@ -336,6 +369,8 @@ func samples(ctx context.Context, emit func([]byte) error, format codec.Format, 
 // Decode streams ALAC PCM from start seconds. onFormat is called once before PCM.
 // All callbacks run on the calling goroutine and may provide backpressure.
 func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFormat func(codec.Format) error, emit func([]byte) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	init, segments, err := playlist(p)
 	if err != nil {
 		return err
@@ -364,13 +399,20 @@ func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFor
 	lastKey := ""
 	var trim int64
 	first := true
-	for _, segment := range segments {
+	firstIndex := 0
+	for firstIndex < len(segments) && segments[firstIndex].Start+segments[firstIndex].Duration <= start {
+		firstIndex++
+	}
+	ready, done := prefetch(ctx, segments[firstIndex:])
+	defer func() { cancel(); <-done }()
+	for fetched := range ready {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		if segment.Start+segment.Duration <= start {
-			continue
+		if fetched.err != nil {
+			return fetched.err
 		}
+		segment := fetched.media
 		if first {
 			trim = int64(math.Round((start - segment.Start) * float64(format.SampleRate)))
 			if trim < 0 {
@@ -388,13 +430,9 @@ func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFor
 			}
 			lastKey = segment.Key
 		}
-		data, err := fetch(ctx, segment)
-		if err != nil {
-			return err
-		}
-		if err = samples(ctx, emit, format, data, uint64(segment.Offset), entries, trex, keys, decoder, &trim); err != nil {
+		if err = samples(ctx, emit, format, fetched.data, uint64(segment.Offset), entries, trex, keys, decoder, &trim); err != nil {
 			return err
 		}
 	}
-	return nil
+	return ctx.Err()
 }

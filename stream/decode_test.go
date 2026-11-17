@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/Eyevinn/mp4ff/mp4"
 	"github.com/InkCitrus/apple-music-native-core/catalog"
@@ -13,7 +14,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type syntheticKeys struct{ opened int }
@@ -172,3 +175,131 @@ func TestMissingNativeDRMKeyFailsBeforeFetching(t *testing.T) {
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type observedBody struct {
+	io.Reader
+	closed func()
+}
+
+func (b observedBody) Close() error {
+	if b.closed != nil {
+		b.closed()
+	}
+	return nil
+}
+
+func TestPrefetchOverlapsOutputAndKeepsOnlyOneSegmentAhead(t *testing.T) {
+	data, n, want := syntheticMedia(t)
+	duration := float64(len(want)) / 6 / 96000
+	firstOutput, nextDownloaded, thirdRequested := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	release := make(chan struct{})
+	unblock := func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	old := mediaClient
+	mediaClient = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/third" {
+			close(thirdRequested)
+		}
+		bounds := strings.Split(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-")
+		start, _ := strconv.Atoi(bounds[0])
+		end, _ := strconv.Atoi(bounds[1])
+		var closed func()
+		if r.URL.Path == "/next" {
+			closed = func() { close(nextDownloaded) }
+		}
+		return &http.Response{StatusCode: 206, Header: http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, len(data))}}, Body: observedBody{bytes.NewReader(data[start : end+1]), closed}}, nil
+	})}
+	p := catalog.Plan{TrackID: "123", MediaURL: "https://fixture.invalid/playlist", Playlist: fmt.Sprintf("#EXTM3U\n#EXT-X-MAP:URI=\"audio\",BYTERANGE=\"%d@0\"\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://license.invalid/test\"\n", n)}
+	for _, name := range []string{"first", "next", "third"} {
+		p.Playlist += fmt.Sprintf("#EXTINF:%.8f,\n#EXT-X-BYTERANGE:%d@%d\n%s\n", duration, len(data)-n, n, name)
+	}
+	var got []byte
+	var result error
+	var first sync.Once
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		result = Decode(ctx, p, 0, &syntheticKeys{}, func(codec.Format) error { return nil }, func(pcm []byte) error {
+			first.Do(func() {
+				close(firstOutput)
+				select {
+				case <-release:
+				case <-ctx.Done():
+				}
+			})
+			got = append(got, pcm...)
+			return ctx.Err()
+		})
+	}()
+	defer func() { cancel(); unblock(); <-done; mediaClient = old }()
+	select {
+	case <-firstOutput:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first output did not start")
+	}
+	select {
+	case <-nextDownloaded:
+	case <-time.After(2 * time.Second):
+		t.Fatal("next segment was not fetched while output was blocked")
+	}
+	select {
+	case <-thirdRequested:
+		t.Fatal("prefetch exceeded one segment ahead")
+	case <-time.After(50 * time.Millisecond):
+	}
+	unblock()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("decode did not finish")
+	}
+	if result != nil {
+		t.Fatal(result)
+	}
+	if !bytes.Equal(got, bytes.Repeat(want, 3)) {
+		t.Fatal("prefetch changed PCM ordering or contents")
+	}
+}
+
+func TestOutputFailureCancelsInFlightPrefetch(t *testing.T) {
+	data, n, _ := syntheticMedia(t)
+	started, canceled := make(chan struct{}), make(chan struct{})
+	old := mediaClient
+	mediaClient = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path == "/next" {
+			close(started)
+			<-r.Context().Done()
+			close(canceled)
+			return nil, r.Context().Err()
+		}
+		bounds := strings.Split(strings.TrimPrefix(r.Header.Get("Range"), "bytes="), "-")
+		start, _ := strconv.Atoi(bounds[0])
+		end, _ := strconv.Atoi(bounds[1])
+		return &http.Response{StatusCode: 206, Header: http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, len(data))}}, Body: io.NopCloser(bytes.NewReader(data[start : end+1]))}, nil
+	})}
+	defer func() { mediaClient = old }()
+	p := catalog.Plan{TrackID: "123", MediaURL: "https://fixture.invalid/playlist", Playlist: fmt.Sprintf("#EXTM3U\n#EXT-X-MAP:URI=\"audio\",BYTERANGE=\"%d@0\"\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://license.invalid/test\"\n#EXTINF:1,\n#EXT-X-BYTERANGE:%d@%d\nfirst\n#EXTINF:1,\n#EXT-X-BYTERANGE:%d@%d\nnext\n", n, len(data)-n, n, len(data)-n, n)}
+	sinkError := errors.New("synthetic output failure")
+	err := Decode(context.Background(), p, 0, &syntheticKeys{}, func(codec.Format) error { return nil }, func([]byte) error {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			return errors.New("prefetch did not start")
+		}
+		return sinkError
+	})
+	if !errors.Is(err, sinkError) {
+		t.Fatal(err)
+	}
+	select {
+	case <-canceled:
+	default:
+		t.Fatal("decode returned with a live prefetch request")
+	}
+}
