@@ -49,7 +49,9 @@ Go applications can use `player.New(player.Config{Native: native.Config{...}})` 
 
 The [minimal player](examples/miniplayer/) embeds the Go library directly and supports account connection, playback, pause, seek, volume and state reporting without MyGo Music or the stdio daemon. Native bundles include `amcore-demo[.exe]` for this example.
 
-`hires` chooses the highest advertised ALAC variant. `lossless` chooses ALAC up to 48 kHz. AAC fallback is intentionally absent. Current full playback supports catalog songs and library songs with a catalog mapping; live radio, uploaded/matched-only files, AirPlay enumeration, exclusive audio output, offline downloads and gapless cross-track output are not implemented.
+`hires` chooses the highest advertised ALAC variant. `lossless` chooses ALAC up to 48 kHz. `aac` explicitly selects Apple's stereo 256 kbps AAC-LC rendition, when offered, and decodes it with the bundled libxaac decoder. A requested quality never falls back to another codec or to a preview. Current full playback supports catalog songs and library songs with a catalog mapping. Uploaded/matched-only files, AirPlay enumeration, exclusive audio output, offline downloads and gapless cross-track output are not implemented.
+
+The six Apple Music live stations use the AAC or HE-AAC broadcasts distributed by [TuneIn](https://tunein.com/radio/Stream-Apple-Music-a178680/). Radio uses the same system audio output and decoder without an account session or the native runtime helper. The source determines the station's quality. Use `Player.PrepareRadio` before replacing an existing queue and `Player.PlayRadio` to start the broadcast. Live playback supports pause, resume and volume.
 
 The underlying prototype passed real subscriber ALAC 24-bit/96 kHz decode, playback, pause/resume, volume and a 90-second seek on macOS ARM64, Windows x64 and Linux x64/WSL2. The extracted daemon has also passed a muted real-account regression on macOS: 24-bit/96 kHz source, pause/resume, zero volume, seek while paused and clean stop. The new code builds and passes portable tests on all three native operating systems. A complete real-account playback regression of the new plugin package on Windows/Linux is still required. Source format is reported separately from system output rate; bit-perfect physical DAC output has not been verified. See [validation details](docs/VALIDATION.md).
 
@@ -58,11 +60,11 @@ The previous Windows helper-only idle observation measured about 178 MiB residen
 ## Tests
 
 ```sh
-go test -race ./...
+python3 scripts/build_aac.py --test
 python3 scripts/test_native.py
 ```
 
-Tests use synthesized audio and an explicitly compiled fake SDK. They do not read real account sessions or contact Apple. The fake SDK transport test is available on macOS/Linux; native Windows CI compiles the actual helper and runs the portable Go suites. The Windows helper retains the validated 16 MiB reserved / 8 MiB committed stack and the v8 guest TLS instruction decoder fix. Do not replace it with an arbitrary cross-compiled helper or reduce that stack without repeating real native authorization tests.
+Tests use synthesized audio and an explicitly compiled fake SDK. They do not read real account sessions or contact Apple. `codec/testdata/aac-lc-stereo.m4a` is a generated 44.1 kHz test tone (440 Hz left, 660 Hz right) encoded to AAC-LC. The build script includes AAC in official bundles; an untagged Go build is ALAC-only. The fake SDK transport test is available on macOS/Linux; native Windows CI compiles the actual helper and runs the portable Go suites. The Windows helper retains the validated 16 MiB reserved / 8 MiB committed stack and the v8 guest TLS instruction decoder fix. Do not replace it with an arbitrary cross-compiled helper or reduce that stack without repeating real native authorization tests.
 
 ## Source and licenses
 

@@ -38,8 +38,10 @@ type mediaRange struct {
 	Start, Duration float64
 }
 type track struct {
-	Cookie []byte
-	Sinf   *mp4.SinfBox
+	Codec     string
+	Cookie    []byte
+	Sinf      *mp4.SinfBox
+	Timescale uint32
 }
 
 func attribute(line, name string) string {
@@ -208,39 +210,54 @@ func decodeInit(data []byte) ([]track, *mp4.TrexBox, error) {
 		return nil, nil, errors.New("one audio track required")
 	}
 	t := moov.Traks[0]
+	if t.Tkhd == nil || t.Mdia == nil || t.Mdia.Mdhd == nil || t.Mdia.Minf == nil || t.Mdia.Minf.Stbl == nil || t.Mdia.Minf.Stbl.Stsd == nil {
+		return nil, nil, errors.New("audio track metadata missing")
+	}
 	var entries []track
 	for _, box := range t.Mdia.Minf.Stbl.Stsd.Children {
 		a, ok := box.(*mp4.AudioSampleEntryBox)
-		if !ok {
+		if !ok || a.Sinf == nil || a.Sinf.Schm == nil || a.Sinf.Schm.SchemeType != "cbcs" || a.Sinf.Schi == nil || a.Sinf.Schi.Tenc == nil {
 			return nil, nil, errors.New("encrypted audio sample entry required")
 		}
-		var cookie []byte
+		entry := track{Codec: "alac", Sinf: a.Sinf, Timescale: t.Mdia.Mdhd.Timescale}
+		if a.Sinf.Frma != nil && a.Sinf.Frma.DataFormat == "mp4a" {
+			entry.Codec = "aac"
+			if a.Esds == nil || a.Esds.DecConfigDescriptor == nil || a.Esds.DecConfigDescriptor.ObjectType != 0x40 || a.Esds.DecConfigDescriptor.DecSpecificInfo == nil {
+				return nil, nil, errors.New("AAC configuration missing")
+			}
+			entry.Cookie = a.Esds.DecConfigDescriptor.DecSpecificInfo.DecConfig
+			entries = append(entries, entry)
+			continue
+		}
 		for _, child := range a.Children {
 			if child.Type() == "alac" {
 				u, ok := child.(*mp4.UnknownBox)
 				if ok {
 					body := u.Payload()
 					if len(body) >= 28 {
-						cookie = append([]byte(nil), body[4:28]...)
+						entry.Cookie = append([]byte(nil), body[4:28]...)
 					}
 				}
 			}
 		}
-		if len(cookie) != 24 || a.Sinf == nil || a.Sinf.Schm == nil || a.Sinf.Schm.SchemeType != "cbcs" || a.Sinf.Schi == nil || a.Sinf.Schi.Tenc == nil {
+		if len(entry.Cookie) != 24 {
 			return nil, nil, errors.New("ALAC CBCS configuration missing")
 		}
-		entries = append(entries, track{cookie, a.Sinf})
+		entries = append(entries, entry)
 	}
 	if len(entries) == 0 {
 		return nil, nil, errors.New("audio configuration missing")
 	}
 	for _, e := range entries {
-		if !bytes.Equal(e.Cookie, entries[0].Cookie) {
-			return nil, nil, errors.New("changing ALAC format unsupported")
+		if e.Codec != entries[0].Codec || !bytes.Equal(e.Cookie, entries[0].Cookie) {
+			return nil, nil, errors.New("changing audio format unsupported")
 		}
 	}
 	trex := mp4.CreateTrex(t.Tkhd.TrackID)
 	trex.DefaultSampleDuration = 4096
+	if entries[0].Codec == "aac" {
+		trex.DefaultSampleDuration = 1024
+	}
 	if moov.Mvex != nil {
 		for _, v := range moov.Mvex.Trexs {
 			if v.TrackID == t.Tkhd.TrackID {
@@ -252,7 +269,7 @@ func decodeInit(data []byte) ([]track, *mp4.TrexBox, error) {
 }
 func decryptSample(data []byte, patterns []mp4.SubSamplePattern, tenc *mp4.TencBox, keys Keys) error {
 	if tenc.DefaultSkipByteBlock != 0 {
-		return errors.New("non-ALAC encryption pattern")
+		return errors.New("unsupported audio encryption pattern")
 	}
 	if len(patterns) == 0 {
 		return keys.Decrypt(data)
@@ -271,7 +288,7 @@ func decryptSample(data []byte, patterns []mp4.SubSamplePattern, tenc *mp4.TencB
 	}
 	return nil
 }
-func samples(ctx context.Context, emit func([]byte) error, format codec.Format, data []byte, offset uint64, entries []track, trex *mp4.TrexBox, keys Keys, decoder *codec.Decoder, trim *int64) error {
+func samples(ctx context.Context, emit func([]byte) error, format codec.Format, data []byte, offset uint64, entries []track, trex *mp4.TrexBox, keys Keys, decoder codec.PCMDecoder, trim *int64) error {
 	reader := bytes.NewReader(data)
 	var fragment *mp4.Fragment
 	for reader.Len() > 0 {
@@ -340,16 +357,22 @@ func samples(ctx context.Context, emit func([]byte) error, format codec.Format, 
 				if e != nil {
 					return e
 				}
-				frames := len(pcm) / (int(format.Channels) * int(format.Bits/8))
+				frameBytes := int(format.Channels) * int(format.Bits/8)
+				frames := len(pcm) / frameBytes
 				if s.Dur != 0 && uint32(frames) != s.Dur {
-					return errors.New("ALAC frames differ from sample duration")
+					if format.Codec != "aac" || s.Dur > uint32(frames) {
+						return errors.New("decoded frames differ from sample duration")
+					}
+					// The final AAC packet can have less playable audio than a full frame.
+					frames = int(s.Dur)
+					pcm = pcm[:frames*frameBytes]
 				}
 				if *trim >= int64(frames) {
 					*trim -= int64(frames)
 					continue
 				}
 				if *trim > 0 {
-					pcm = pcm[int(*trim)*int(format.Channels)*int(format.Bits/8):]
+					pcm = pcm[int(*trim)*frameBytes:]
 					*trim = 0
 				}
 				if err := ctx.Err(); err != nil {
@@ -417,7 +440,7 @@ func Prepare(ctx context.Context, p catalog.Plan, start float64, byteLimit int64
 	return &Prepared{trackID: p.TrackID, start: start, segments: segments, initial: data[0], first: data[1]}, nil
 }
 
-// Decode streams ALAC PCM from start seconds. onFormat is called once before PCM.
+// Decode streams PCM from start seconds. onFormat is called once before PCM.
 // All callbacks run on the calling goroutine and may provide backpressure.
 func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFormat func(codec.Format) error, emit func([]byte) error) error {
 	input, err := Prepare(ctx, p, start, 0)
@@ -437,12 +460,20 @@ func (p *Prepared) Decode(ctx context.Context, keys Keys, onFormat func(codec.Fo
 	if err != nil {
 		return err
 	}
-	decoder, err := codec.New(entries[0].Cookie)
+	var decoder codec.PCMDecoder
+	if entries[0].Codec == "aac" {
+		decoder, err = codec.NewAAC(entries[0].Cookie)
+	} else {
+		decoder, err = codec.New(entries[0].Cookie)
+	}
 	if err != nil {
 		return err
 	}
 	defer decoder.Close()
 	format := decoder.Format()
+	if format.Codec == "aac" && entries[0].Timescale != format.SampleRate {
+		return errors.New("unsupported AAC media timescale")
+	}
 	if err = onFormat(format); err != nil {
 		return err
 	}

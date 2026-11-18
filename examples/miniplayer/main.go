@@ -31,7 +31,7 @@ func main() {
 	runtimeDir := flag.String("runtime", "", "runtime directory, default DATA/runtime")
 	profile := flag.String("session", "", "dedicated native session, default DATA/session")
 	track := flag.String("track", "", "catalog song ID to start playing")
-	quality := flag.String("quality", "hires", "hires or lossless")
+	quality := flag.String("quality", "hires", "hires, lossless or aac")
 	volume := flag.Float64("volume", 15, "initial volume, 0 to 100")
 	language := flag.String("language", "en", "account window language: en or zh-CN")
 	asJSON := flag.Bool("json", false, "emit safe machine-readable playback state")
@@ -41,7 +41,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "Unsupported platform")
 		os.Exit(2)
 	}
-	if *quality != "hires" && *quality != "lossless" || math.IsNaN(*volume) || math.IsInf(*volume, 0) || *volume < 0 || *volume > 100 {
+	if !player.SupportsQuality(*quality) || math.IsNaN(*volume) || math.IsInf(*volume, 0) || *volume < 0 || *volume > 100 {
 		fmt.Fprintln(os.Stderr, "Invalid quality or volume")
 		os.Exit(2)
 	}

@@ -18,6 +18,7 @@ import (
 type State struct {
 	Status      string        `json:"status"`
 	TrackID     string        `json:"trackId,omitempty"`
+	Live        bool          `json:"live,omitempty"`
 	Position    int64         `json:"position"` // milliseconds
 	Duration    int64         `json:"duration"`
 	Volume      float64       `json:"volume"`           // 0..100
@@ -67,17 +68,23 @@ type preparedTrack struct {
 	input       *stream.Prepared
 }
 type Player struct {
-	op     sync.Mutex
-	mu     sync.Mutex
-	config Config
-	state  State
-	job    *job
-	ahead  *preparedTrack
-	keys   Keys
-	closed bool
+	op          sync.Mutex
+	playRequest uint64 // protected by op
+	mu          sync.Mutex
+	config      Config
+	state       State
+	job         *job
+	ahead       *preparedTrack
+	radio       *stream.PreparedRadio
+	keys        Keys
+	closed      bool
 }
 
 var catalogID = regexp.MustCompile(`^[0-9]{1,24}$`)
+
+func SupportsQuality(quality string) bool {
+	return quality == "hires" || quality == "lossless" || quality == "aac" && codec.HasAAC
+}
 
 func accountOf(resolver Resolver) string {
 	if client, ok := resolver.(*catalog.Client); ok {
@@ -147,7 +154,7 @@ func (p *Player) PlayWithNext(ctx context.Context, id string, position int64, qu
 	if position < 0 {
 		return errors.New("invalid position")
 	}
-	if quality != "hires" && quality != "lossless" {
+	if !SupportsQuality(quality) {
 		return errors.New("unsupported quality")
 	}
 	if nextID == id || !catalogID.MatchString(nextID) {
@@ -167,6 +174,7 @@ func (p *Player) PlayWithNext(ctx context.Context, id string, position int64, qu
 			return e
 		}
 	}
+	p.playRequest++
 	p.stopLocked()
 	child, cancel := context.WithCancel(ctx)
 	j := &job{ctx: child, cancel: cancel, done: make(chan struct{}), offset: position, nextID: nextID}
@@ -274,40 +282,15 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string, ahead *prepa
 		p.mu.Unlock()
 		startedAhead, checkedEnd := false, false
 		err = input.Decode(j.ctx, keys, func(f codec.Format) error {
+			if (quality == "aac") != (f.Codec == "aac") {
+				return errors.New("selected quality does not match the audio codec")
+			}
 			format = f
-			p.mu.Lock()
-			defer p.mu.Unlock()
-			if j.ctx.Err() != nil {
-				return j.ctx.Err()
-			}
-			var e error
-			if p.config.OpenOutput != nil {
-				j.sink, e = p.config.OpenOutput(f, float32(p.state.Volume/100))
-			} else {
-				j.sink, e = audio.New(f.SampleRate, f.Channels, f.Bits, float32(p.state.Volume/100))
-			}
-			if e != nil {
-				return e
-			}
-			p.state.Format = &f
-			p.state.OutputRate = audio.HardwareRate()
-			if p.state.Status == "paused" {
-				return j.sink.Pause(true)
-			}
-			return nil
+			return p.openOutput(j, f)
 		}, func(pcm []byte) error {
-			if err := j.ctx.Err(); err != nil {
+			if err := p.writeOutput(j, format, pcm); err != nil {
 				return err
 			}
-			if err := j.sink.Write(pcm); err != nil {
-				return err
-			}
-			j.frames += int64(len(pcm)) / (int64(format.Channels) * int64(format.Bits/8))
-			p.mu.Lock()
-			if p.state.Status == "buffering" {
-				p.state.Status = "playing"
-			}
-			p.mu.Unlock()
 			if j.nextID != "" && j.frames >= int64(format.SampleRate)/2 {
 				nearEnd := duration > 0 && j.offset+j.frames*1000/int64(format.SampleRate) >= duration-10000
 				if !startedAhead || nearEnd && !checkedEnd {
@@ -333,6 +316,49 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string, ahead *prepa
 			}
 		}
 	}
+	p.finishJob(j, err)
+}
+
+func (p *Player) openOutput(j *job, f codec.Format) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := j.ctx.Err(); err != nil {
+		return err
+	}
+	var err error
+	if p.config.OpenOutput != nil {
+		j.sink, err = p.config.OpenOutput(f, float32(p.state.Volume/100))
+	} else {
+		j.sink, err = audio.New(f.SampleRate, f.Channels, f.Bits, float32(p.state.Volume/100))
+	}
+	if err != nil {
+		return err
+	}
+	p.state.Format = &f
+	p.state.OutputRate = audio.HardwareRate()
+	if p.state.Status == "paused" {
+		return j.sink.Pause(true)
+	}
+	return nil
+}
+
+func (p *Player) writeOutput(j *job, format codec.Format, pcm []byte) error {
+	if err := j.ctx.Err(); err != nil {
+		return err
+	}
+	if err := j.sink.Write(pcm); err != nil {
+		return err
+	}
+	j.frames += int64(len(pcm)) / (int64(format.Channels) * int64(format.Bits/8))
+	p.mu.Lock()
+	if p.state.Status == "buffering" {
+		p.state.Status = "playing"
+	}
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *Player) finishJob(j *job, err error) {
 	p.mu.Lock()
 	if j.sink != nil {
 		sink := j.sink
@@ -351,7 +377,7 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string, ahead *prepa
 			p.clearAheadLocked()
 			p.state.Status = "error"
 			p.state.Error = classify(err)
-			if p.keys != nil {
+			if !p.state.Live && p.keys != nil {
 				p.keys.Close()
 				p.keys = nil
 			}
@@ -405,6 +431,9 @@ func (p *Player) Seek(ctx context.Context, ms int64, quality string) error {
 	if s.TrackID == "" {
 		return nil
 	}
+	if s.Live {
+		return errors.New("unsupported")
+	}
 	if s.Duration > 0 && ms >= s.Duration {
 		return errors.New("invalid position")
 	}
@@ -423,9 +452,11 @@ func (p *Player) Seek(ctx context.Context, ms int64, quality string) error {
 func (p *Player) Stop() {
 	p.op.Lock()
 	defer p.op.Unlock()
+	p.playRequest++
 	p.stopLocked()
 	p.mu.Lock()
 	p.clearAheadLocked()
+	p.radio = nil
 	p.state = State{Status: "idle", Volume: p.state.Volume}
 	p.mu.Unlock()
 }
@@ -434,9 +465,11 @@ func (p *Player) Close()   { p.release(true) }
 func (p *Player) release(closed bool) {
 	p.op.Lock()
 	defer p.op.Unlock()
+	p.playRequest++
 	p.stopLocked()
 	p.mu.Lock()
 	p.clearAheadLocked()
+	p.radio = nil
 	p.closed = closed
 	p.state = State{Status: "idle", Volume: p.state.Volume}
 	keys := p.keys

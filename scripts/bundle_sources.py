@@ -2,6 +2,7 @@
 """Attach public corresponding sources, notices and exact build provenance."""
 from pathlib import Path
 import argparse, hashlib, io, json, shutil, subprocess, tarfile
+from build_aac import LIB as AAC_LIBRARY, SOURCE as AAC_SOURCE, checked_source
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -36,6 +37,12 @@ def main():
     revision = git(ROOT, 'rev-parse', 'HEAD').decode().strip()
     licenses = bundle/'licenses'
     licenses.mkdir(parents=True, exist_ok=True)
+    if not AAC_LIBRARY.is_file():
+        raise RuntimeError('Missing AAC decoder build')
+    aac_revision = checked_source()
+    (licenses/'libxaac').mkdir(exist_ok=True)
+    for name in ('LICENSE', 'NOTICE'):
+        shutil.copy2(AAC_SOURCE/name, licenses/'libxaac'/name)
     for relative in ['LICENSE', 'THIRD_PARTY.md', 'codec/LICENSE.Apple-ALAC',
                      'audio/LICENSE.miniaudio', 'third_party/LICENSE.mp4ff',
                      'third_party/LICENSE.Adam']:
@@ -52,9 +59,10 @@ def main():
             else:
                 (licenses/'windows').mkdir(exist_ok=True)
                 shutil.copy2(path, licenses/'windows'/path.name)
-    dependencies = {}
+    dependencies = {'libxaac': aac_revision}
     with tarfile.open(bundle/'corresponding-source.tar.gz', 'w:gz') as archive:
         add_repository(archive, ROOT, 'apple-music-native-core', revision)
+        add_repository(archive, AAC_SOURCE, 'dependency-sources/libxaac', aac_revision, True)
         for name, info in json.loads((ROOT/'native/macos/dependencies-lock.json').read_text()).items():
             directory = ROOT/'native'/name
             if not directory.exists(): continue

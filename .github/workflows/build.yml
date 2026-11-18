@@ -50,8 +50,8 @@ jobs:
           'CC=gcc' | Out-File -FilePath $env:GITHUB_ENV -Append
           'CXX=g++' | Out-File -FilePath $env:GITHUB_ENV -Append
           'CGO_ENABLED=1' | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Test portable libraries
-        run: go test -race ./...
+      - name: Build the pinned AAC decoder and test both codecs
+        run: python scripts/build_aac.py --test
       - name: Test compiled synthetic SDK transport
         if: runner.os != 'Windows'
         run: python3 scripts/test_native.py

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/InkCitrus/apple-music-native-core/auth"
 	"github.com/InkCitrus/apple-music-native-core/catalog"
+	"github.com/InkCitrus/apple-music-native-core/codec"
 	"github.com/InkCitrus/apple-music-native-core/native"
 	"github.com/InkCitrus/apple-music-native-core/player"
 	"io"
@@ -17,7 +18,7 @@ import (
 )
 
 const ProtocolVersion = 1
-const Version = "0.1.4"
+const Version = "0.2.0"
 
 type Config struct {
 	Native native.Config
@@ -123,6 +124,7 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 	var p struct {
 		TrackID     string   `json:"trackId"`
 		NextTrackID string   `json:"nextTrackId"`
+		StationID   string   `json:"stationId"`
 		Position    int64    `json:"position"`
 		Percent     *float64 `json:"percent"`
 		Quality     string   `json:"quality"`
@@ -132,7 +134,11 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 	}
 	switch r.Method {
 	case "hello":
-		return map[string]any{"protocol": ProtocolVersion, "version": Version, "formats": []string{"alac"}, "devices": []string{"default"}}, nil
+		formats := []string{"alac"}
+		if codec.HasAAC {
+			formats = append(formats, "aac")
+		}
+		return map[string]any{"protocol": ProtocolVersion, "version": Version, "formats": formats, "liveRadio": codec.HasAAC, "devices": []string{"default"}}, nil
 	case "doctor":
 		_, he := os.Stat(s.config.Native.Helper)
 		_, te := catalog.LoadTokens(s.config.Native.Profile)
@@ -141,6 +147,11 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 		return s.player.State(), nil
 	case "devices":
 		return []map[string]any{{"id": "default", "name": "System Audio Output", "active": true}}, nil
+	case "prepareRadio":
+		return true, s.player.PrepareRadio(ctx, p.StationID)
+	case "playRadio":
+		err := s.player.PlayRadio(ctx, p.StationID)
+		return s.player.State(), err
 	case "play", "seek":
 		s.authMu.Lock()
 		defer s.authMu.Unlock()
@@ -173,7 +184,7 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 		s.player.Stop()
 		return true, nil
 	case "quality":
-		if p.Quality != "hires" && p.Quality != "lossless" {
+		if !player.SupportsQuality(p.Quality) {
 			return nil, errors.New("unsupported")
 		}
 		s.mu.Lock()

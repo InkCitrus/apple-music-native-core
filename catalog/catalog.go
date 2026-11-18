@@ -1,4 +1,4 @@
-// Package catalog resolves licensed ALAC streams using a native subscriber session.
+// Package catalog resolves licensed audio streams using a native subscriber session.
 package catalog
 
 import (
@@ -150,7 +150,7 @@ func (c *Client) Resolve(ctx context.Context, id, quality string) (Plan, error) 
 		return p, e
 	}
 	if len(v.Data) != 1 || v.Data[0].Attributes.Assets.HLS == "" {
-		return p, errors.New("lossless unavailable for this track")
+		return p, errors.New("requested audio unavailable for this track")
 	}
 	song := v.Data[0]
 	master := song.Attributes.Assets.HLS
@@ -158,7 +158,15 @@ func (c *Client) Resolve(ctx context.Context, id, quality string) (Plan, error) 
 	if e != nil {
 		return p, e
 	}
-	media, e := SelectALAC(master, string(b), quality)
+	var media string
+	switch quality {
+	case "aac":
+		media, e = SelectAAC(master, string(b))
+	case "hires", "lossless":
+		media, e = SelectALAC(master, string(b), quality)
+	default:
+		return p, errors.New("unsupported quality")
+	}
 	if e != nil {
 		return p, e
 	}
@@ -241,4 +249,36 @@ func SelectALAC(base, body, quality string) (string, error) {
 		return a.bandwidth > b.bandwidth
 	})
 	return variants[0].url, nil
+}
+
+// SelectAAC selects the advertised stereo 256 kbps AAC-LC rendition. Apple
+// reports actual average bandwidth for these streams, which can exceed 256 kbps.
+func SelectAAC(base, body string) (string, error) {
+	u, err := url.Parse(base)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
+		return "", errors.New("invalid master playlist")
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#EXT-X-STREAM-INF:") || Attribute(line, "CODECS") != "mp4a.40.2" || Attribute(line, "AUDIO") != "audio-stereo-256" {
+			continue
+		}
+		j := i + 1
+		for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+			j++
+		}
+		if j == len(lines) || strings.HasPrefix(strings.TrimSpace(lines[j]), "#") {
+			continue
+		}
+		ref, err := url.Parse(strings.TrimSpace(lines[j]))
+		if err != nil {
+			continue
+		}
+		media := u.ResolveReference(ref)
+		if media.Scheme == "https" && media.Hostname() != "" && media.User == nil {
+			return media.String(), nil
+		}
+	}
+	return "", errors.New("256 kbps AAC unavailable for this track")
 }

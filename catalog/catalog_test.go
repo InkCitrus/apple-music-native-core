@@ -31,3 +31,22 @@ aac.m3u8`, "hires"); e == nil {
 		t.Fatal("accepted AAC")
 	}
 }
+
+func TestSelectHighQualityAACWithoutDowngrade(t *testing.T) {
+	base := "https://fixture.invalid/release/master.m3u8"
+	variants := master + `#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=132000,CODECS="mp4a.40.2",AUDIO="audio-stereo-128"
+low.m3u8
+#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=72000,CODECS="mp4a.40.5",AUDIO="audio-stereo-64"
+he.m3u8
+`
+	if _, err := SelectAAC(base, variants); err == nil {
+		t.Fatal("accepted a rendition other than stereo AAC 256")
+	}
+	want := "https://fixture.invalid/release/high.m3u8"
+	got, err := SelectAAC(base, variants+`#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=264000,BANDWIDTH=310000,CODECS="mp4a.40.2",AUDIO="audio-stereo-256"
+high.m3u8
+`)
+	if err != nil || got != want {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
+	}
+}

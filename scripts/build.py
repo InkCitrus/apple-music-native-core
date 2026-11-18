@@ -2,6 +2,7 @@
 """Build a native bundle on its target OS; no account or SDK files are needed."""
 from pathlib import Path
 import argparse, hashlib, json, os, platform, re, shutil, subprocess, sys
+from build_aac import go_environment
 ROOT=Path(__file__).resolve().parents[1]
 def run(args,**kwargs): subprocess.run([str(s) for s in args],cwd=ROOT,check=True,**kwargs)
 def copy_windows_dependencies(binary, destination, compiler):
@@ -24,9 +25,11 @@ def main():
     env=os.environ.copy();env['CGO_ENABLED']='1'
     if oskey=='windows':
         env['PATH']=str(Path(args.msys)/'ucrt64/bin')+os.pathsep+env.get('PATH','');env['CC']='gcc';env['CXX']='g++'
-    run(['go','build','-trimpath','-ldflags=-s -w','-o',binary,'./cmd/amcore'],env=env)
+    run([sys.executable,'scripts/build_aac.py'],env=env)
+    env=go_environment(env)
+    run(['go','build','-tags','amcore_aac','-trimpath','-ldflags=-s -w','-o',binary,'./cmd/amcore'],env=env)
     demo=out/('amcore-demo.exe' if oskey=='windows' else 'amcore-demo')
-    run(['go','build','-trimpath','-ldflags=-s -w','-o',demo,'./examples/miniplayer'],env=env)
+    run(['go','build','-tags','amcore_aac','-trimpath','-ldflags=-s -w','-o',demo,'./examples/miniplayer'],env=env)
     if oskey=='darwin':
         if args.deps:
             lock=json.loads((ROOT/'native/macos/dependencies-lock.json').read_text())

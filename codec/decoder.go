@@ -16,10 +16,17 @@ import (
 )
 
 type Format struct {
+	Codec           string `json:"codec"`
 	SampleRate      uint32 `json:"sampleRate"`
 	Channels        uint8  `json:"channels"`
 	Bits            uint8  `json:"bits"`
 	FramesPerPacket uint32 `json:"framesPerPacket"`
+}
+
+type PCMDecoder interface {
+	Format() Format
+	Decode([]byte) ([]byte, error)
+	Close()
 }
 type Decoder struct {
 	mu     sync.Mutex
@@ -31,7 +38,7 @@ func New(cookie []byte) (*Decoder, error) {
 	if len(cookie) != 24 {
 		return nil, errors.New("ALAC config must contain 24 bytes")
 	}
-	f := Format{SampleRate: binary.BigEndian.Uint32(cookie[20:24]), Channels: cookie[9], Bits: cookie[5], FramesPerPacket: binary.BigEndian.Uint32(cookie[:4])}
+	f := Format{Codec: "alac", SampleRate: binary.BigEndian.Uint32(cookie[20:24]), Channels: cookie[9], Bits: cookie[5], FramesPerPacket: binary.BigEndian.Uint32(cookie[:4])}
 	if f.SampleRate < 8000 || f.SampleRate > 384000 || f.Channels == 0 || f.Channels > 8 || f.FramesPerPacket == 0 || f.FramesPerPacket > 65536 || (f.Bits != 16 && f.Bits != 24 && f.Bits != 32) {
 		return nil, errors.New("unsupported ALAC config")
 	}
