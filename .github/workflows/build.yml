@@ -3,6 +3,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      plugin_commit:
+        description: 'Optional MyGo Apple Music plugin commit to package for testing (full SHA)'
+        required: false
+        type: string
 concurrency:
   group: native-bundles-${{ github.ref }}
   cancel-in-progress: true
@@ -99,5 +104,57 @@ jobs:
         with:
           name: amcore-release-${{ matrix.platform }}
           path: build/release/
+          retention-days: 14
+          if-no-files-found: error
+
+  plugin-test:
+    if: github.event_name == 'workflow_dispatch' && inputs.plugin_commit != ''
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate the plugin revision and read the core version
+        env:
+          PLUGIN_COMMIT: ${{ inputs.plugin_commit }}
+        run: |
+          [[ "$PLUGIN_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          version=$(sed -n 's/^const Version = "\([0-9.]*\)"$/\1/p' service/service.go)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          echo "CORE_VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          repository: InkCitrus/mygo-music-apple-music
+          ref: ${{ inputs.plugin_commit }}
+          path: plugin
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: amcore-release-*
+          path: core-artifacts
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: plugin/package-lock.json
+      - name: Build and verify the plugin test packages
+        working-directory: plugin
+        env:
+          PLUGIN_COMMIT: ${{ inputs.plugin_commit }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$PLUGIN_COMMIT"
+          npm ci
+          python3 scripts/fetch_core_release.py --actions-bundles ../core-artifacts \
+            --core-commit "$GITHUB_SHA" --core-version "$CORE_VERSION" --core-run "$GITHUB_RUN_ID"
+          npm run typecheck
+          npm run build
+          npm test
+          python3 scripts/package_release.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mygo-apple-music-test
+          path: plugin/build/release/
           retention-days: 14
           if-no-files-found: error
