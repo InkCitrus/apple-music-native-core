@@ -17,7 +17,7 @@ import (
 )
 
 const ProtocolVersion = 1
-const Version = "0.1.3"
+const Version = "0.1.4"
 
 type Config struct {
 	Native native.Config
@@ -121,10 +121,11 @@ func message(code string) string {
 }
 func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 	var p struct {
-		TrackID  string   `json:"trackId"`
-		Position int64    `json:"position"`
-		Percent  *float64 `json:"percent"`
-		Quality  string   `json:"quality"`
+		TrackID     string   `json:"trackId"`
+		NextTrackID string   `json:"nextTrackId"`
+		Position    int64    `json:"position"`
+		Percent     *float64 `json:"percent"`
+		Quality     string   `json:"quality"`
 	}
 	if len(r.Params) > 0 && json.Unmarshal(r.Params, &p) != nil {
 		return nil, errors.New("invalid")
@@ -154,7 +155,7 @@ func (s *Server) Call(ctx context.Context, r Request) (any, error) {
 		}
 		var e error
 		if r.Method == "play" {
-			e = s.player.Play(ctx, p.TrackID, p.Position, q)
+			e = s.player.PlayWithNext(ctx, p.TrackID, p.Position, q, p.NextTrackID)
 		} else {
 			e = s.player.Seek(ctx, p.Position, q)
 		}

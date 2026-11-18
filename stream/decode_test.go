@@ -128,6 +128,65 @@ func TestEncryptedHLSToPCMAndSeek(t *testing.T) {
 		}
 	}
 }
+
+func TestPreparedStartOverlapsDownloadsAndReusesBytes(t *testing.T) {
+	data, n, want := syntheticMedia(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	requests := make(chan string, 4)
+	release := make(chan struct{})
+	previousClient := mediaClient
+	mediaClient = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		requests <- r.URL.Path
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		}
+		start, end := 0, n-1
+		if r.URL.Path == "/first" {
+			start, end = n, len(data)-1
+		}
+		return &http.Response{StatusCode: 206, Header: http.Header{"Content-Range": []string{fmt.Sprintf("bytes %d-%d/%d", start, end, len(data))}}, Body: io.NopCloser(bytes.NewReader(data[start : end+1]))}, nil
+	})}
+	defer func() { mediaClient = previousClient }()
+	plan := catalog.Plan{TrackID: "123", MediaURL: "https://fixture.invalid/playlist", Playlist: fmt.Sprintf("#EXTM3U\n#EXT-X-MAP:URI=\"init\",BYTERANGE=\"%d@0\"\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://license.invalid/test\"\n#EXTINF:1,\n#EXT-X-BYTERANGE:%d@%d\nfirst\n", n, len(data)-n, n)}
+	if _, err := Prepare(ctx, plan, 0, int64(len(data)-1)); err == nil || len(requests) != 0 {
+		t.Fatal("preparation exceeded its byte limit")
+	}
+	var input *Prepared
+	var prepareErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		input, prepareErr = Prepare(ctx, plan, 0, int64(len(data)))
+	}()
+	defer func() { cancel(); <-done }()
+	seen := map[string]bool{}
+	for range 2 {
+		select {
+		case path := <-requests:
+			seen[path] = true
+		case <-ctx.Done():
+			t.Fatal("startup requests did not overlap")
+		}
+	}
+	if !seen["/init"] || !seen["/first"] {
+		t.Fatal("wrong startup ranges", seen)
+	}
+	close(release)
+	<-done
+	if prepareErr != nil {
+		t.Fatal(prepareErr)
+	}
+	var got []byte
+	if err := input.Decode(ctx, &syntheticKeys{}, func(codec.Format) error { return nil }, func(pcm []byte) error { got = append(got, pcm...); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 0 || !bytes.Equal(got, want) {
+		t.Fatal("prepared playback must reuse the startup bytes and preserve PCM")
+	}
+}
 func TestInvalidRanges(t *testing.T) {
 	for _, v := range []string{"1", "0@0", "33554433@0", "2@-1", "1@9223372036854775807"} {
 		_, _, e := byteRange(v)

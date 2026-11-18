@@ -55,6 +55,16 @@ type job struct {
 	sink   Output
 	offset int64
 	frames int64
+	nextID string
+}
+type preparedTrack struct {
+	id, quality string
+	account     string
+	until       time.Time
+	cancel      context.CancelFunc
+	ready       chan struct{}
+	duration    int64
+	input       *stream.Prepared
 }
 type Player struct {
 	op     sync.Mutex
@@ -62,8 +72,18 @@ type Player struct {
 	config Config
 	state  State
 	job    *job
+	ahead  *preparedTrack
 	keys   Keys
 	closed bool
+}
+
+var catalogID = regexp.MustCompile(`^[0-9]{1,24}$`)
+
+func accountOf(resolver Resolver) string {
+	if client, ok := resolver.(*catalog.Client); ok {
+		return client.Tokens.User
+	}
+	return ""
 }
 
 func New(c Config) *Player { return &Player{config: c, state: State{Status: "idle", Volume: 100}} }
@@ -117,7 +137,11 @@ func (p *Player) stopLocked() {
 	p.mu.Unlock()
 }
 func (p *Player) Play(ctx context.Context, id string, position int64, quality string) error {
-	if !regexp.MustCompile(`^[0-9]{1,24}$`).MatchString(id) {
+	return p.PlayWithNext(ctx, id, position, quality, "")
+}
+
+func (p *Player) PlayWithNext(ctx context.Context, id string, position int64, quality, nextID string) error {
+	if !catalogID.MatchString(id) {
 		return errors.New("unsupported")
 	}
 	if position < 0 {
@@ -125,6 +149,9 @@ func (p *Player) Play(ctx context.Context, id string, position int64, quality st
 	}
 	if quality != "hires" && quality != "lossless" {
 		return errors.New("unsupported quality")
+	}
+	if nextID == id || !catalogID.MatchString(nextID) {
+		nextID = ""
 	}
 	p.op.Lock()
 	defer p.op.Unlock()
@@ -136,25 +163,72 @@ func (p *Player) Play(ctx context.Context, id string, position int64, quality st
 	}
 	resolver := p.config.Resolver
 	if resolver == nil {
-		t, e := catalog.LoadTokens(p.config.Native.Profile)
-		if e != nil {
+		if _, e := catalog.LoadTokens(p.config.Native.Profile); e != nil {
 			return e
 		}
-		resolver = catalog.New(t)
 	}
 	p.stopLocked()
 	child, cancel := context.WithCancel(ctx)
-	j := &job{ctx: child, cancel: cancel, done: make(chan struct{}), offset: position}
+	j := &job{ctx: child, cancel: cancel, done: make(chan struct{}), offset: position, nextID: nextID}
 	p.mu.Lock()
+	var ahead *preparedTrack
+	if a := p.ahead; a != nil {
+		if a.quality != quality || time.Now().After(a.until) {
+			p.clearAheadLocked()
+		} else if a.id == id && position == 0 {
+			ahead, p.ahead = a, nil
+		} else if a.id != nextID {
+			p.clearAheadLocked()
+		}
+	}
 	p.job = j
 	p.state = State{Status: "buffering", TrackID: id, Position: position, Volume: p.state.Volume}
 	p.mu.Unlock()
-	go p.run(j, resolver, id, quality)
+	go p.run(j, resolver, id, quality, ahead)
 	return nil
 }
-func (p *Player) run(j *job, resolver Resolver, id, quality string) {
+
+func (p *Player) clearAheadLocked() {
+	if p.ahead != nil {
+		p.ahead.cancel()
+		p.ahead = nil
+	}
+}
+
+func (p *Player) prepareNext(j *job, resolver Resolver, quality string, nearEnd bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if j.nextID == "" || p.job != j || j.ctx.Err() != nil {
+		return
+	}
+	account := accountOf(resolver)
+	if a := p.ahead; a != nil && a.account == account && time.Until(a.until) > 15*time.Second {
+		select {
+		case <-a.ready:
+			if a.input != nil || !nearEnd {
+				return
+			}
+		default:
+			return
+		}
+	}
+	p.clearAheadLocked()
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(j.ctx), 10*time.Second)
+	a := &preparedTrack{id: j.nextID, quality: quality, account: account, until: time.Now().Add(45 * time.Second), cancel: cancel, ready: make(chan struct{})}
+	p.ahead = a
+	go func() {
+		defer close(a.ready)
+		defer cancel()
+		plan, err := resolver.Resolve(ctx, a.id, a.quality)
+		if err == nil && ctx.Err() == nil {
+			a.duration = plan.DurationMs
+			a.input, _ = stream.Prepare(ctx, plan, 0, 8<<20)
+		}
+	}()
+}
+
+func (p *Player) run(j *job, resolver Resolver, id, quality string, ahead *preparedTrack) {
 	defer close(j.done)
-	var plan catalog.Plan
 	var keys Keys
 	var err error
 	// Resuming the native SDK refreshes cached API tokens before catalog access.
@@ -168,8 +242,27 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string) {
 			}
 		}
 	}
-	if err == nil && j.ctx.Err() == nil {
+	var input *stream.Prepared
+	var duration int64
+	if err == nil && ahead != nil && ahead.account == accountOf(resolver) {
+		select {
+		case <-ahead.ready:
+			if time.Now().Before(ahead.until) {
+				input, duration = ahead.input, ahead.duration
+			}
+		default:
+		}
+	}
+	if ahead != nil {
+		ahead.cancel()
+	}
+	if err == nil && input == nil && j.ctx.Err() == nil {
+		var plan catalog.Plan
 		plan, err = resolver.Resolve(j.ctx, id, quality)
+		if err == nil {
+			duration = plan.DurationMs
+			input, err = stream.Prepare(j.ctx, plan, float64(j.offset)/1000, 0)
+		}
 	}
 	if err == nil && keys == nil && j.ctx.Err() == nil {
 		keys, err = p.openKeys(j.ctx)
@@ -177,9 +270,10 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string) {
 	var format codec.Format
 	if err == nil && j.ctx.Err() == nil {
 		p.mu.Lock()
-		p.state.Duration = plan.DurationMs
+		p.state.Duration = duration
 		p.mu.Unlock()
-		err = stream.Decode(j.ctx, plan, float64(j.offset)/1000, keys, func(f codec.Format) error {
+		startedAhead, checkedEnd := false, false
+		err = input.Decode(j.ctx, keys, func(f codec.Format) error {
 			format = f
 			p.mu.Lock()
 			defer p.mu.Unlock()
@@ -214,6 +308,14 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string) {
 				p.state.Status = "playing"
 			}
 			p.mu.Unlock()
+			if j.nextID != "" && j.frames >= int64(format.SampleRate)/2 {
+				nearEnd := duration > 0 && j.offset+j.frames*1000/int64(format.SampleRate) >= duration-10000
+				if !startedAhead || nearEnd && !checkedEnd {
+					p.prepareNext(j, resolver, quality, nearEnd)
+					startedAhead = true
+					checkedEnd = nearEnd
+				}
+			}
 			return nil
 		})
 	}
@@ -246,6 +348,7 @@ func (p *Player) run(j *job, resolver Resolver, id, quality string) {
 	}
 	if j.ctx.Err() == nil {
 		if err != nil {
+			p.clearAheadLocked()
 			p.state.Status = "error"
 			p.state.Error = classify(err)
 			if p.keys != nil {
@@ -305,7 +408,13 @@ func (p *Player) Seek(ctx context.Context, ms int64, quality string) error {
 	if s.Duration > 0 && ms >= s.Duration {
 		return errors.New("invalid position")
 	}
-	err := p.Play(ctx, s.TrackID, ms, quality)
+	p.mu.Lock()
+	nextID := ""
+	if p.job != nil && p.state.TrackID == s.TrackID {
+		nextID = p.job.nextID
+	}
+	p.mu.Unlock()
+	err := p.PlayWithNext(ctx, s.TrackID, ms, quality, nextID)
 	if err == nil && s.Status == "paused" {
 		err = p.Pause(true)
 	}
@@ -316,6 +425,7 @@ func (p *Player) Stop() {
 	defer p.op.Unlock()
 	p.stopLocked()
 	p.mu.Lock()
+	p.clearAheadLocked()
 	p.state = State{Status: "idle", Volume: p.state.Volume}
 	p.mu.Unlock()
 }
@@ -326,6 +436,7 @@ func (p *Player) release(closed bool) {
 	defer p.op.Unlock()
 	p.stopLocked()
 	p.mu.Lock()
+	p.clearAheadLocked()
 	p.closed = closed
 	p.state = State{Status: "idle", Volume: p.state.Volume}
 	keys := p.keys

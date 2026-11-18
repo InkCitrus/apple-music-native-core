@@ -13,7 +13,7 @@ Error codes: `invalid`, `unsupported`, `setup`, `signIn`, `busy`, `unavailable`.
 | `setup` | none | download and verify runtime dependencies |
 | `auth` | none | open local account/password/OTP dialogs and persist native session |
 | `session` | none | private `developerToken`, `mediaUserToken` for the embedding application's catalog API |
-| `play` | `trackId` (catalog ID), `position` (ms), optional `quality` | accept a new buffering job, replacing old playback |
+| `play` | `trackId` (catalog ID), `position` (ms), optional `quality`, optional `nextTrackId` (catalog ID) | accept a new buffering job, replacing old playback |
 | `state` | none | current state |
 | `pause`, `resume` | none | change output state |
 | `seek` | `position` (ms), optional `quality` | cancel old decoder and start at the requested sample; retain pause/volume |
@@ -37,3 +37,5 @@ Statuses: `idle`, `buffering`, `playing`, `paused`, `ended`, `error`. `buffering
 Native outputs may add `outputStats` with `underruns`, `queuedFrames`, and `capacityFrames`. Frames use the source sample rate. The underrun counter records an empty output queue while active, excluding intentional pause, cancellation and normal end-of-input. These are local output-health counters, without credentials, URLs or audio samples; they do not prove bit-perfect output or replace a listening check. Output capacity is approximately two seconds at each source sample rate. At most one encrypted HLS segment is prefetched ahead of the current segment, and it is discarded on cancellation.
 
 There is one decoder and one native key context in use at a time. The embedding application owns queue order. Poll state; after `ended`, choose the next track explicitly. No audio is written to disk. Incoming EOF cancels outstanding work and terminates owned helpers and dialogs.
+
+`nextTrackId` is an optional hint. Once the current song has buffered audio, the core can prepare the next song's playlist and up to 8 MiB of encrypted startup data in memory using the current quality. It uses this data only for a fresh, matching `play` from position zero. Changing track or quality can discard the prepared data. The hint does not advance the queue or open a second decoder or key context. Older protocol v1 cores ignore the hint.

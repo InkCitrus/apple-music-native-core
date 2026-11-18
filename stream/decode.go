@@ -366,24 +366,74 @@ func samples(ctx context.Context, emit func([]byte) error, format codec.Format, 
 	return nil
 }
 
-// Decode streams ALAC PCM from start seconds. onFormat is called once before PCM.
-// All callbacks run on the calling goroutine and may provide backpressure.
-func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFormat func(codec.Format) error, emit func([]byte) error) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+type Prepared struct {
+	trackID        string
+	start          float64
+	segments       []mediaRange
+	initial, first []byte
+}
+
+func Prepare(ctx context.Context, p catalog.Plan, start float64, byteLimit int64) (*Prepared, error) {
 	init, segments, err := playlist(p)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	last := segments[len(segments)-1]
 	if math.IsNaN(start) || math.IsInf(start, 0) || start < 0 || start >= last.Start+last.Duration {
-		return errors.New("seek outside track")
+		return nil, errors.New("seek outside track")
 	}
-	initial, err := fetch(ctx, init)
+	for segments[0].Start+segments[0].Duration <= start {
+		segments = segments[1:]
+	}
+	if byteLimit > 0 && init.Length+segments[0].Length > byteLimit {
+		return nil, errors.New("startup ranges exceed preparation limit")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	type result struct {
+		index int
+		data  []byte
+		err   error
+	}
+	completed := make(chan result, 2)
+	for index, part := range []mediaRange{init, segments[0]} {
+		go func() {
+			data, e := fetch(ctx, part)
+			completed <- result{index, data, e}
+		}()
+	}
+	var data [2][]byte
+	for range data {
+		r := <-completed
+		if r.err != nil && err == nil {
+			err = r.err
+			cancel()
+		}
+		data[r.index] = r.data
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &Prepared{trackID: p.TrackID, start: start, segments: segments, initial: data[0], first: data[1]}, nil
+}
+
+// Decode streams ALAC PCM from start seconds. onFormat is called once before PCM.
+// All callbacks run on the calling goroutine and may provide backpressure.
+func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFormat func(codec.Format) error, emit func([]byte) error) error {
+	input, err := Prepare(ctx, p, start, 0)
 	if err != nil {
 		return err
 	}
-	entries, trex, err := decodeInit(initial)
+	return input.Decode(ctx, keys, onFormat, emit)
+}
+
+func (p *Prepared) Decode(ctx context.Context, keys Keys, onFormat func(codec.Format) error, emit func([]byte) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	entries, trex, err := decodeInit(p.initial)
 	if err != nil {
 		return err
 	}
@@ -397,40 +447,37 @@ func Decode(ctx context.Context, p catalog.Plan, start float64, keys Keys, onFor
 		return err
 	}
 	lastKey := ""
-	var trim int64
-	first := true
-	firstIndex := 0
-	for firstIndex < len(segments) && segments[firstIndex].Start+segments[firstIndex].Duration <= start {
-		firstIndex++
-	}
-	ready, done := prefetch(ctx, segments[firstIndex:])
-	defer func() { cancel(); <-done }()
-	for fetched := range ready {
-		if err = ctx.Err(); err != nil {
-			return err
-		}
-		if fetched.err != nil {
-			return fetched.err
-		}
-		segment := fetched.media
-		if first {
-			trim = int64(math.Round((start - segment.Start) * float64(format.SampleRate)))
-			if trim < 0 {
-				trim = 0
-			}
-			first = false
+	first := p.segments[0]
+	trim := max(0, int64(math.Round((p.start-first.Start)*float64(format.SampleRate))))
+	consume := func(segment mediaRange, data []byte) error {
+		if e := ctx.Err(); e != nil {
+			return e
 		}
 		if segment.Key != lastKey {
-			id := p.TrackID
+			id := p.trackID
 			if strings.Contains(segment.Key, "P000000000") {
 				id = "0"
 			}
-			if err = keys.OpenKey(id, segment.Key); err != nil {
-				return err
+			if e := keys.OpenKey(id, segment.Key); e != nil {
+				return e
 			}
 			lastKey = segment.Key
 		}
-		if err = samples(ctx, emit, format, fetched.data, uint64(segment.Offset), entries, trex, keys, decoder, &trim); err != nil {
+		return samples(ctx, emit, format, data, uint64(segment.Offset), entries, trex, keys, decoder, &trim)
+	}
+	ready, done := prefetch(ctx, p.segments[1:])
+	defer func() { cancel(); <-done }()
+	data := p.first
+	p.initial, p.first = nil, nil
+	if err = consume(first, data); err != nil {
+		return err
+	}
+	data = nil
+	for fetched := range ready {
+		if fetched.err != nil {
+			return fetched.err
+		}
+		if err = consume(fetched.media, fetched.data); err != nil {
 			return err
 		}
 	}
